@@ -57,7 +57,7 @@ lookup = companies.collect().get_lookup()
 
 ## What it does
 
-**A language for pipelines.** Bring cleaning, deduplication and linking steps together into a plan that is serialisable and cheap to iterate on. Splink can't express this. matchlab is built around it.
+**A language for pipelines.** Bring cleaning, deduplication and linking steps together into a plan that is serialisable and cheap to iterate on. 
 
 **Lazy, like Polars.** Nothing runs until you `collect()`. Each step knows the whole plan behind it, and results are content-addressed. Re-collecting only redoes the work whose inputs actually changed.
 

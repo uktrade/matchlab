@@ -21,13 +21,7 @@ There is no `.env` to configure. matchlab reads no environment variables. Wareho
 
 Secret scanning is done with [TruffleHog](https://github.com/trufflesecurity/trufflehog).
 
-For security, we expect you to install [pre-commit](https://pre-commit.com). Ensure your hooks are installed:
-
-```shell
-pre-commit install
-```
-
-We also mandate [git trailers](https://git-scm.com/docs/git-interpret-trailers) to confirm your local hooks ran. Ensure pre-commit has the right permissions:
+For security, we expect you to install [pre-commit](https://pre-commit.com). We mandate [git trailers](https://git-scm.com/docs/git-interpret-trailers) to confirm your local hooks ran. Ensure your hooks are installed:
 
 ```shell
 pre-commit install --install-hooks --overwrite -t commit-msg -t pre-commit
