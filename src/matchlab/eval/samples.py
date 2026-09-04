@@ -10,12 +10,11 @@ from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, TypeAlias
 
 import polars as pl
+from fastdsu import connected_components
 from pydantic import BaseModel
 
 from matchlab.core.dataframes import qualify
-from matchlab.core.dsu import DisjointSet
 from matchlab.core.exceptions import SourceTableError
-from matchlab.core.resolver_output import root_id
 from matchlab.eval.judgements import Judgement
 from matchlab.eval.metrics import PrecisionRecall, precision_recall
 
@@ -239,32 +238,31 @@ def _merged_resolver_output(readings: list[Reading]) -> pl.DataFrame:
     `store_judgement` re-mints its own root from the leaves it is given, so a merged
     root only ever lives as far as the reviewer.
     """
-    frames = [store.read_resolver(fp) for store, fp in readings]
-
-    components = DisjointSet[int]()
-    for frame in frames:
-        for leaves in frame.group_by("root").agg("leaf")["leaf"].to_list():
-            components.add(leaves[0])
-            for leaf in leaves[1:]:
-                components.union(leaves[0], leaf)
-
-    # `root_id` is invariant to leaf order but the caller does the sorting, and it is
-    # vectorised because there are as many clusters here as there are entities.
-    merged = (
-        pl.DataFrame(
-            {"leaf": [sorted(component) for component in components.get_components()]},
-            schema={"leaf": pl.List(pl.UInt64)},
-        )
-        .with_columns(root_id(pl.col("leaf")).alias("root"))
-        # A component always holds at least one leaf, so the empty-list case this
-        # settles cannot arise. Pinning it keeps the polars 2.0 default change quiet.
-        .explode("leaf", empty_as_null=False)
+    resolved: pl.DataFrame = pl.concat(
+        [store.read_resolver(fp) for store, fp in readings]
     )
+    edges: pl.DataFrame = (
+        resolved.group_by("root")
+        .agg(
+            pl.col("leaf").first().alias("src"),
+            pl.col("leaf").implode().alias("dst"),
+        )
+        .select(pl.col("src"), pl.col("dst"))
+        .explode("dst", empty_as_null=True)
+        .sort("src", "dst")
+    )
+    components: pl.DataFrame = pl.from_arrow(
+        connected_components(edges["src"].to_arrow(), edges["dst"].to_arrow())
+    ).rename({"key": "leaf", "label": "root"})
 
-    records = pl.concat(
-        [frame.select("leaf", "key", "source") for frame in frames]
-    ).unique()
-    return merged.join(records, on="leaf").select("root", "leaf", "key", "source")
+    return (
+        components.unique()
+        .join(
+            resolved.select("leaf", "key", "source"),
+            on="leaf",
+        )
+        .select("root", "leaf", "key", "source")
+    )
 
 
 def _sample_clusters(
