@@ -312,6 +312,19 @@ wheels = [
 ]
 
 [[package]]
+name = "fastdsu"
+version = "0.0.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/a6/c7/a988cc15f568e42d15ed76a29e089e3dfac757dc590610f41161b39d7288/fastdsu-0.0.0.tar.gz", hash = "sha256:ebaf712832bbe0c0bb041a678462d4759bc3d5b34e5618d1b849cc88a5dc19af", size = 38119, upload-time = "2026-09-04T11:27:13.217Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/9c/1e/55ea3ec4a8c6a37e6b5e72fbd50fba1e241adc730b022d64ed74e4eaff78/fastdsu-0.0.0-cp311-abi3-macosx_11_0_arm64.whl", hash = "sha256:0c746377601ab55dfa8b4bcab53392aa3679e789867ebda47d892961ba5ca9c6", size = 2710490, upload-time = "2026-09-04T11:27:05.343Z" },
+    { url = "https://files.pythonhosted.org/packages/a3/43/906cfe4d214e145e65003661383ac9a11f7edda74e7f06c138e761c4e985/fastdsu-0.0.0-cp311-abi3-macosx_11_0_x86_64.whl", hash = "sha256:68b533ea5e5a53c2a41a3f2f055302c0d6e806953e533876f9c34b3c40911846", size = 2912921, upload-time = "2026-09-04T11:27:07.068Z" },
+    { url = "https://files.pythonhosted.org/packages/ed/04/4f178d4315f6f05ef4623190c8efbb09dda5ea30e9723fcb22dd4e2fee23/fastdsu-0.0.0-cp311-abi3-manylinux_2_28_aarch64.whl", hash = "sha256:737d1e2461035a3739771c75c961de81aea23da42947eea60368c5b32fe6917b", size = 3156511, upload-time = "2026-09-04T11:27:08.714Z" },
+    { url = "https://files.pythonhosted.org/packages/45/dd/0e1e8fdc67e659efaf64a99fb87bcec7c6f6c9f32775d38079b7988610c4/fastdsu-0.0.0-cp311-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:d2d81268d35c2f804df5d6d7d98f27dfa1c7b42d04c9674043fe28dca6bf9a07", size = 3237334, upload-time = "2026-09-04T11:27:10.34Z" },
+    { url = "https://files.pythonhosted.org/packages/b9/bb/53331c8a06743df893f89eda58aecf82f7bb7d203c0b5cdcb84f32e83d6a/fastdsu-0.0.0-cp311-abi3-win_amd64.whl", hash = "sha256:bc46ad7347ef8c9f78bdcfd62644395610a1bfc6f6f67749a772c45173fda189", size = 2874853, upload-time = "2026-09-04T11:27:11.768Z" },
+]
+
+[[package]]
 name = "filelock"
 version = "3.29.0"
 source = { registry = "https://pypi.org/simple" }
@@ -740,6 +753,7 @@ dependencies = [
     { name = "adbc-driver-manager" },
     { name = "duckdb" },
     { name = "faker" },
+    { name = "fastdsu" },
     { name = "frozendict" },
     { name = "pandas" },
     { name = "platformdirs" },
@@ -779,6 +793,7 @@ requires-dist = [
     { name = "adbc-driver-manager", specifier = ">=1.9.0" },
     { name = "duckdb", specifier = ">=1.1.1" },
     { name = "faker", specifier = ">=36.1.1" },
+    { name = "fastdsu", specifier = ">=0.0.0" },
     { name = "frozendict", specifier = ">=2.4.6" },
     { name = "pandas", specifier = ">=2.3.3" },
     { name = "platformdirs", specifier = ">=4.5.0" },

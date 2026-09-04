@@ -4,9 +4,9 @@ from collections.abc import Mapping
 from typing import Annotated, ClassVar
 
 import polars as pl
+from fastdsu import connected_components
 from pydantic import Field
 
-from matchlab.core.dsu import DisjointSet
 from matchlab.resolvers.base import (
     SCHEMA_CLUSTERS,
     ResolverMethod,
@@ -33,29 +33,30 @@ class Components(ResolverMethod):
     )
 
     def compute_clusters(  # noqa: D102
-        self, model_edges: Mapping[int, pl.DataFrame]
+        self,
+        model_edges: Mapping[int, pl.DataFrame],
     ) -> pl.DataFrame:
-        djs = DisjointSet[int]()
+        filtered = [
+            edges_item.filter(pl.col("score") >= self.thresholds.get(position, 0.0))
+            for position, edges_item in model_edges.items()
+            if edges_item.height > 0
+        ]
 
-        for position, edges in model_edges.items():
-            if edges.height == 0:
-                continue
-
-            threshold = self.thresholds.get(position, 0.0)
-            filtered_edges = edges.filter(pl.col("score") >= threshold)
-
-            for left_id, right_id in filtered_edges.select(
-                "left_id", "right_id"
-            ).iter_rows():
-                djs.union(left_id, right_id)
-
-        rows: list[dict[str, int]] = []
-        for parent_id, component in enumerate(djs.get_components(), start=1):
-            rows.extend(
-                {"parent_id": parent_id, "child_id": node_id} for node_id in component
-            )
-
-        if not rows:
+        if not filtered:
             return pl.from_arrow(SCHEMA_CLUSTERS.empty_table())
 
-        return pl.DataFrame(rows).cast(pl.Schema(SCHEMA_CLUSTERS))
+        edges = pl.concat(filtered).select(
+            pl.col("left_id").alias("src"),
+            pl.col("right_id").alias("dst"),
+        )
+
+        return (
+            pl.from_arrow(
+                connected_components(
+                    edges["src"].to_arrow(),
+                    edges["dst"].to_arrow(),
+                )
+            )
+            .rename({"label": "parent_id", "key": "child_id"})
+            .cast(pl.Schema(SCHEMA_CLUSTERS))
+        )

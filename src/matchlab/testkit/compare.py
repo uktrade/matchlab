@@ -14,8 +14,8 @@ clusters were subsets" tells you the matcher is too strict, in a way a number ca
 from collections import Counter
 
 import polars as pl
+from fastdsu import connected_components
 
-from matchlab.core.dsu import DisjointSet
 from matchlab.testkit.entities import Cluster, EntityReference
 
 
@@ -97,37 +97,58 @@ def scores_to_clusters(
     Returns:
         One merged `Cluster` per connected component.
     """
-    left_lookup = {entity.id: entity for entity in left_clusters}
-    if right_clusters is not None:
-        right_lookup = {entity.id: entity for entity in right_clusters}
+
+    def relabel(
+        clusters: tuple[Cluster, ...], offset: int
+    ) -> tuple[dict[int, int], dict[int, Cluster]]:
+        """Map each cluster's raw id to a fresh label starting at `offset`.
+
+        Fresh labels rather than raw `Cluster.id`s, because left and right come from
+        sources that number their own rows independently, so the same raw id can
+        name two different entities. Disjoint offsets keep the two sides apart.
+        """
+        id_to_label = {entity.id: offset + i for i, entity in enumerate(clusters)}
+        label_to_entity = dict(zip(id_to_label.values(), clusters, strict=True))
+        return id_to_label, label_to_entity
+
+    left_ids, lookup = relabel(left_clusters, offset=0)
+    if right_clusters is None:
+        # A dedupe reads one side twice, so it already has one label space.
+        right_ids = left_ids
     else:
-        right_lookup = left_lookup
+        right_ids, right_lookup = relabel(right_clusters, offset=len(left_clusters))
+        lookup |= right_lookup
 
-    djs = DisjointSet[Cluster]()
+    matched = scores.filter(pl.col("score") >= threshold).select(
+        src=pl.col("left_id")
+        .cast(pl.Int64)
+        .replace_strict(left_ids, return_dtype=pl.Int64),
+        dst=pl.col("right_id")
+        .cast(pl.Int64)
+        .replace_strict(right_ids, return_dtype=pl.Int64),
+    )
 
-    # Add ALL entities to the disjoint set
-    for entity in left_clusters:
-        djs.add(entity)
-    if right_clusters is not None:
-        for entity in right_clusters:
-            djs.add(entity)
+    # fastdsu's connected_components only takes edges, so every entity needs to show
+    # up as a self-edge, or singletons will drop
+    labels = list(lookup)
+    self_edges = pl.DataFrame(
+        {"src": labels, "dst": labels}, schema=dict.fromkeys(("src", "dst"), pl.Int64)
+    )
 
-    # Add edges to the disjoint set
-    for record in scores.to_dicts():
-        if record["score"] >= threshold:
-            djs.union(
-                left_lookup[record["left_id"]],
-                right_lookup[record["right_id"]],
-            )
+    edges = pl.concat([matched, self_edges])
 
-    components: set[set[Cluster]] = djs.get_components()
+    components = (
+        pl.from_arrow(
+            connected_components(edges["src"].to_arrow(), edges["dst"].to_arrow())
+        )
+        .rename({"key": "id", "label": "component"})
+        .group_by("component")
+        .agg("id")
+    )
 
-    entities: list[Cluster] = []
-    for component in components:
-        merged: Cluster = sum(component)
-        entities.append(merged)
-
-    return tuple(entities)
+    return tuple(
+        sum(lookup[i] for i in row["id"]) for row in components.iter_rows(named=True)
+    )
 
 
 def diff_entities(expected: list[Cluster], actual: list[Cluster]) -> tuple[bool, dict]:

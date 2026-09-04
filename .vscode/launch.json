@@ -10,7 +10,7 @@
             "console": "integratedTerminal",
             "justMyCode": false,
             "env": {
-                "PYTEST_ADDOPTS": "-p no:xdist",
+                "PYTEST_ADDOPTS": "-p no:xdist -o addopts=",
                 "PYTHONPATH": "${workspaceFolder}",
             },
             "python": "${workspaceFolder}/.venv/bin/python",
