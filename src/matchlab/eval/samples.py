@@ -15,6 +15,7 @@ from pydantic import BaseModel
 
 from matchlab.core.dataframes import qualify
 from matchlab.core.exceptions import SourceTableError
+from matchlab.core.resolver_output import root_id
 from matchlab.eval.judgements import Judgement
 from matchlab.eval.metrics import PrecisionRecall, precision_recall
 
@@ -249,19 +250,28 @@ def _merged_resolver_output(readings: list[Reading]) -> pl.DataFrame:
         )
         .select(pl.col("src"), pl.col("dst"))
         .explode("dst", empty_as_null=True)
-        .sort("src", "dst")
+        .sort("src", "dst")  # fastdsu needs stable edge order
     )
+
+    # Find components
     components: pl.DataFrame = pl.from_arrow(
         connected_components(edges["src"].to_arrow(), edges["dst"].to_arrow())
-    ).rename({"key": "leaf", "label": "root"})
+    ).rename({"key": "leaf", "label": "_component"})
+
+    # Content address components by leaves
+    component_roots: pl.DataFrame = (
+        components.group_by("_component")
+        .agg(pl.col("leaf").unique().sort().alias("_leaves"))
+        .with_columns(root_id(pl.col("_leaves")).alias("root"))
+        .select("_component", "root")
+    )
 
     return (
-        components.unique()
-        .join(
-            resolved.select("leaf", "key", "source"),
-            on="leaf",
-        )
+        components.join(component_roots, on="_component")
+        .join(resolved.select("leaf", "key", "source").unique(), on="leaf")
         .select("root", "leaf", "key", "source")
+        .unique()
+        .sort("root", "leaf", "key")
     )
 
 
