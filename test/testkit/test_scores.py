@@ -2,8 +2,8 @@
 
 import polars as pl
 import pytest
+from fastdsu import connected_components
 
-from matchlab.core.dsu import DisjointSet
 from matchlab.core.schemas import SCHEMA_MODEL_EDGES
 from matchlab.testkit.entities import Cluster, EntityReference, TrueEntity
 from matchlab.testkit.models import generate_entity_scores
@@ -283,17 +283,16 @@ def test_disjoint_set_recovery() -> None:
         score_range=(0.9, 1.0),
     )
 
-    ds = DisjointSet[int]()
-    for row in table.to_dicts():
-        if row["score"] >= 0.9:  # High confidence matches
-            ds.union(row["left_id"], row["right_id"])
+    edges = table.filter(pl.col("score") >= 0.9).select(["left_id", "right_id"])
 
-    clusters = ds.get_components()
+    labels = pl.from_arrow(
+        connected_components(edges["left_id"].to_arrow(), edges["right_id"].to_arrow())
+    )
 
     # Splitting each entity into six one-record clusters should recover exactly two
-    assert len(clusters) == 2
+    assert labels["label"].unique().len() == 2
 
-    cluster_sizes = sorted(len(cluster) for cluster in clusters)
+    cluster_sizes = labels.group_by("label").agg(pl.col("key").count())["key"].to_list()
     assert cluster_sizes == [3, 3]
 
 
@@ -357,11 +356,13 @@ def test_complex_entity_recovery() -> None:
     # Every one of the 5 fragments pairs with every other: n*(n-1)/2 = 10 edges
     assert len(table) == 10
 
-    ds = DisjointSet[int]()
-    for row in table.to_dicts():
-        if row["score"] >= 0.9:
-            ds.union(row["left_id"], row["right_id"])
+    edges = table.filter(pl.col("score") >= 0.9).select(["left_id", "right_id"])
 
-    clusters = ds.get_components()
-    assert len(clusters) == 1
-    assert len(clusters[0]) == 5
+    labels = pl.from_arrow(
+        connected_components(edges["left_id"].to_arrow(), edges["right_id"].to_arrow())
+    )
+
+    assert labels["label"].unique().len() == 1
+
+    cluster_sizes = labels.group_by("label").agg(pl.col("key").count())["key"].to_list()
+    assert cluster_sizes[0] == 5

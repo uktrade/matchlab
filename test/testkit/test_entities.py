@@ -297,6 +297,20 @@ def test_generate_entities(features: tuple[FeatureConfig, ...], n: int) -> None:
             2,  # No merging with empty scores
             id="empty_scores",
         ),
+        pytest.param(
+            pl.DataFrame(
+                {
+                    "left_id": [1],
+                    "right_id": [1],
+                    "score": [0.9],
+                }
+            ),
+            (make_cluster_entity(1, "left", ["a1"]),),
+            (make_cluster_entity(1, "right", ["b1"]),),
+            0.8,
+            1,  # One merged entity, even though left and right happen to share a raw id
+            id="colliding_ids_across_sides",
+        ),
     ],
 )
 def test_scores_to_clusters(

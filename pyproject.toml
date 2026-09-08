@@ -20,6 +20,7 @@ dependencies = [
     "adbc-driver-manager>=1.9.0",
     "duckdb>=1.1.1",
     "faker>=36.1.1",
+    "fastdsu>=0.0.0",
     "frozendict>=2.4.6",
     "pandas>=2.3.3",
     "platformdirs>=4.5.0",
