@@ -111,26 +111,32 @@ def scores_to_clusters(
         label_to_entity = dict(zip(id_to_label.values(), clusters, strict=True))
         return id_to_label, label_to_entity
 
-    left_ids, lookup = relabel(left_clusters, offset=0)
+    label_to_cluster: dict[int, Cluster]
+    left_id_labels: dict[int, int]
+    right_id_labels: dict[int, int]
+
+    left_id_labels, label_to_cluster = relabel(left_clusters, offset=0)
     if right_clusters is None:
         # A dedupe reads one side twice, so it already has one label space.
-        right_ids = left_ids
+        right_id_labels = left_id_labels
     else:
-        right_ids, right_lookup = relabel(right_clusters, offset=len(left_clusters))
-        lookup |= right_lookup
+        right_id_labels, right_lookup = relabel(
+            right_clusters, offset=len(left_clusters)
+        )
+        label_to_cluster |= right_lookup
 
     matched = scores.filter(pl.col("score") >= threshold).select(
         src=pl.col("left_id")
         .cast(pl.Int64)
-        .replace_strict(left_ids, return_dtype=pl.Int64),
+        .replace_strict(left_id_labels, return_dtype=pl.Int64),
         dst=pl.col("right_id")
         .cast(pl.Int64)
-        .replace_strict(right_ids, return_dtype=pl.Int64),
+        .replace_strict(right_id_labels, return_dtype=pl.Int64),
     )
 
     # fastdsu's connected_components only takes edges, so every entity needs to show
     # up as a self-edge, or singletons will drop
-    labels = list(lookup)
+    labels = list(label_to_cluster)
     self_edges = pl.DataFrame(
         {"src": labels, "dst": labels}, schema=dict.fromkeys(("src", "dst"), pl.Int64)
     )
@@ -146,8 +152,10 @@ def scores_to_clusters(
         .agg("id")
     )
 
+    # Fetch constituent Clusters and merge them per component
     return tuple(
-        sum(lookup[i] for i in row["id"]) for row in components.iter_rows(named=True)
+        sum(label_to_cluster[i] for i in row["id"])
+        for row in components.iter_rows(named=True)
     )
 
 
