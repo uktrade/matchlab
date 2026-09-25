@@ -100,6 +100,71 @@ def _ids_by_key(matches: pl.DataFrame, column: str) -> dict[str, int]:
     }
 
 
+# -- selective identifier reads ------------------------------------------------------
+
+
+def test_identifiers_source_uncollected(
+    source: Callable[..., mb.Source], store: mb.DuckDBStore
+) -> None:
+    """An identifier read needs collected source leaves, even with an empty filter."""
+    with pytest.raises(RuntimeError, match="has not been collected"):
+        source("crn").identifiers(store, ids=set())
+
+
+def test_identifiers_source_filtered(
+    source: Callable[..., mb.Source], store: mb.DuckDBStore
+) -> None:
+    """A source restricts identifiers by leaf without changing its full reading."""
+    crn = source("crn").collect()
+    all_ids = crn.identifiers(store)
+    selected = all_ids.filter(pl.col("key") == "a1")["id"].item()
+
+    assert crn.identifiers(store, ids={selected}).equals(
+        all_ids.filter(pl.col("id") == selected)
+    )
+
+
+def test_identifiers_transform_filtered(
+    source: Callable[..., mb.Source], store: mb.DuckDBStore
+) -> None:
+    """A transform keeps the source's identifier reading when it reshapes data."""
+    crn = source("crn")
+    selected = crn.select("crn_company").collect()
+    source_ids = crn.identifiers(store)
+    leaf = source_ids.filter(pl.col("key") == "a2")["id"].item()
+
+    assert selected.identifiers(store, ids={leaf}).equals(
+        source_ids.filter(pl.col("id") == leaf)
+    )
+
+
+def test_identifiers_resolver_filtered(
+    source: Callable[..., mb.Source], store: mb.DuckDBStore
+) -> None:
+    """One affected root includes its leaves from both source readings."""
+    apex, _, _ = _apex(source)
+    apex.collect()
+    all_ids = apex.identifiers(store)
+    root = all_ids.filter((pl.col("source") == "crn") & (pl.col("key") == "a1"))[
+        "id"
+    ].item()
+
+    assert set(apex.identifiers(store, ids={root})["key"]) == {"a1", "a2", "b1"}
+
+
+def test_identifiers_resolver_empty(
+    source: Callable[..., mb.Source], store: mb.DuckDBStore
+) -> None:
+    """An empty filter keeps the schema when several sources are concatenated."""
+    apex, _, _ = _apex(source)
+    apex.collect()
+    all_ids = apex.identifiers(store)
+    empty = apex.identifiers(store, ids=set())
+
+    assert empty.schema == all_ids.schema
+    assert empty.is_empty()
+
+
 # -- building and collecting ----------------------------------------------------------
 
 

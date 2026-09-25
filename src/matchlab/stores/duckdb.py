@@ -352,11 +352,19 @@ class DuckDBStore(Store):
         source_fp: Fingerprint,
         source_name: str,
         resolver_fp: Fingerprint | None = None,
+        ids: set[int] | None = None,
     ) -> pl.DataFrame:
         if self._kind(source_fp) is not StepKind.SOURCE:
             raise KeyError(f"No stored source for fingerprint {source_fp.hex()}")
 
         if resolver_fp is None:
+            if ids is not None:
+                return self.conn.execute(
+                    "SELECT leaf AS id, CAST(? AS VARCHAR) AS source, key, leaf "
+                    "FROM source_leaves WHERE fp = ? "
+                    "AND leaf IN (SELECT UNNEST(?::UBIGINT[]))",
+                    [source_name, source_fp, list(ids)],
+                ).pl()
             return self.conn.execute(
                 "SELECT leaf AS id, CAST(? AS VARCHAR) AS source, key, leaf "
                 "FROM source_leaves WHERE fp = ?",
@@ -367,6 +375,13 @@ class DuckDBStore(Store):
             raise KeyError(f"No stored resolver for fingerprint {resolver_fp.hex()}")
         # Both predicates matter. `source` keeps this from scanning every source's
         # rows, and `resolver_output` holds one generation per collect of the plan.
+        if ids is not None:
+            return self.conn.execute(
+                "SELECT root AS id, source, key, leaf "
+                "FROM resolver_output WHERE fp = ? AND source = ? "
+                "AND root IN (SELECT UNNEST(?::UBIGINT[]))",
+                [resolver_fp, source_name, list(ids)],
+            ).pl()
         return self.conn.execute(
             "SELECT root AS id, source, key, leaf "
             "FROM resolver_output WHERE fp = ? AND source = ?",

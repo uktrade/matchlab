@@ -106,17 +106,22 @@ class RecordStep(Step):
         """
         ...
 
-    def identifiers(self, store: Store) -> pl.DataFrame:
-        """Return `(id, source, key, leaf)` for every record this record step reads.
+    def identifiers(self, store: Store, ids: set[int] | None = None) -> pl.DataFrame:
+        """Return `(id, source, key, leaf)` for this record step's IDs.
 
         `id` is the resolver's entity root when reading through one, otherwise the
         source leaf. This is the upstream resolver output a downstream resolver needs to
         carry every reachable leaf forward, including records no model matched.
+        With `ids=None`, the read includes every identifier. An empty set returns none.
         """
-        return pl.concat(
-            [store.read_identifiers(*read) for read in self._identifier_reads],
-            how="vertical",
-        )
+        readings = []
+        for source_fp, source_name, resolver_fp in self._identifier_reads:
+            if source_fp is None:
+                raise RuntimeError("This record step has not been collected.")
+            readings.append(
+                store.read_identifiers(source_fp, source_name, resolver_fp, ids=ids)
+            )
+        return pl.concat(readings, how="vertical")
 
     def data(self, return_type: DataFrameType = DataFrameType.POLARS) -> DataFrameClass:
         """Return this record step's records, collecting the plan first if needed."""
