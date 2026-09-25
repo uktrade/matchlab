@@ -178,19 +178,14 @@ class Transform(RecordStep):
             raise RuntimeError(
                 f"{self} is not prepared. Prepare from its collected input first."
             )
-        data = record.data.clone()
+        data = record.data
+        if data is None:
+            raise ValueError(
+                "A transform requires record data before a model boundary."
+            )
         reshaped = self.transformer.apply(data)
-        self._validate_id(record.data, reshaped)
-        return record.model_copy(
-            update={
-                "data": reshaped,
-                "ids": record.ids.copy(),
-                "source_data": record.source_data.clone(),
-                "edges": {
-                    model: edges.clone() for model, edges in record.edges.items()
-                },
-            }
-        )
+        self._validate_id(data, reshaped)
+        return record.with_data(reshaped)
 
     def _ensure_prepared(self) -> None:
         """Prepare from the collected input when collection used a cached artifact."""

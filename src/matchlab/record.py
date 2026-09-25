@@ -5,10 +5,11 @@ Its source evidence stays intact while transforms reshape the current data.
 """
 
 from collections.abc import Mapping
+from types import MappingProxyType
 from uuid import uuid4
 
 import polars as pl
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, PrivateAttr
 
 from matchlab.core.dataframes import qualify
 from matchlab.core.hash import HashMethod, hash_rows
@@ -22,16 +23,73 @@ class Record(BaseModel):
     """Carry affected data and original source evidence through one plan branch.
 
     `ids` belong to the current step's ID space. They need not equal the IDs in
-    `data`. Each branch owns its ID set and model-edge ledger.
+    `data`. A model result has no current record data. Public dataframe access returns
+    a copy, and the ID set and edge ledger are immutable.
     """
 
-    model_config = ConfigDict(arbitrary_types_allowed=True, frozen=True)
+    model_config = ConfigDict(arbitrary_types_allowed=True, extra="forbid", frozen=True)
 
-    data: pl.DataFrame
-    ids: set[int]
+    ids: frozenset[int]
     source: Source
-    source_data: pl.DataFrame
-    edges: dict[Model, pl.DataFrame] = Field(default_factory=dict)
+
+    _data: pl.DataFrame | None = PrivateAttr(default=None)
+    _source_data: pl.DataFrame = PrivateAttr()
+    _edges: Mapping[Model, pl.DataFrame] = PrivateAttr()
+    _sealed: bool = PrivateAttr(default=False)
+
+    def __init__(
+        self,
+        data: pl.DataFrame | None,
+        ids: set[int] | frozenset[int],
+        source: Source,
+        source_data: pl.DataFrame,
+        edges: Mapping[Model, pl.DataFrame] | None = None,
+    ) -> None:
+        """Build an isolated record value from its branch-local state."""
+        super().__init__(ids=frozenset(ids), source=source)
+        self._data = data.clone() if data is not None else None
+        self._source_data = source_data.clone()
+        self._edges = MappingProxyType(
+            {model: frame.clone() for model, frame in (edges or {}).items()}
+        )
+        self._sealed = True
+
+    def __setattr__(self, name: str, value: object) -> None:
+        """Keep private dataframe state fixed after construction."""
+        if name in {
+            "_data",
+            "_source_data",
+            "_edges",
+        } and self.__pydantic_private__.get("_sealed", False):
+            raise AttributeError("Record is immutable.")
+        super().__setattr__(name, value)
+
+    @property
+    def data(self) -> pl.DataFrame | None:
+        """Return a copy of current data, or `None` after a model boundary."""
+        return self._data.clone() if self._data is not None else None
+
+    @property
+    def source_data(self) -> pl.DataFrame:
+        """Return a copy of the original source evidence."""
+        return self._source_data.clone()
+
+    @property
+    def edges(self) -> Mapping[Model, pl.DataFrame]:
+        """Return an immutable ledger with independent edge frames."""
+        return MappingProxyType(
+            {model: frame.clone() for model, frame in self._edges.items()}
+        )
+
+    def with_data(self, data: pl.DataFrame) -> "Record":
+        """Return this record's branch with reshaped current data."""
+        return Record(
+            data=data,
+            ids=self.ids,
+            source=self.source,
+            source_data=self._source_data,
+            edges=self._edges,
+        )
 
     @classmethod
     def from_input(

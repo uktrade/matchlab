@@ -271,23 +271,32 @@ def test_custom_transformer_id_drop(
 def test_transform_record_branches(
     source: Callable[..., Source], store: DuckDBStore
 ) -> None:
-    """Two branches can reshape one input without sharing their mutable state."""
+    """Two branches reshape the same immutable input without sharing state."""
     crn = source("crn")
     cleaned = crn.clean({"upper": "upper(crn_company)"}).collect()
     selected = crn.select("crn_town").collect()
     input_record = Record.from_input(crn, {"company": "acme", "town": "leeds"}, store)
     model = crn.dedupe(NaiveDeduper, {"unique_fields": ["crn_company"]})
-    input_record.edges[model] = pl.DataFrame({"left_id": [1]})
+    input_record = Record(
+        data=input_record.data,
+        ids=input_record.ids,
+        source=input_record.source,
+        source_data=input_record.source_data,
+        edges={model: pl.DataFrame({"left_id": [1]})},
+    )
 
     left = cleaned._execute_record(input_record, store)
     right = selected._execute_record(input_record, store)
-    left.ids.add(42)
-    left.edges[model].drop_in_place("left_id")
-    left.source_data.drop_in_place("company")
+    left_data = left.data
+    assert left_data is not None
+    left_data.drop_in_place("upper")
 
+    assert left.data is not None
     assert left.data["upper"].item() == "ACME"
+    assert right.data is not None
     assert "crn_company" not in right.data.columns
     assert "upper" not in right.data.columns
+    assert input_record.data is not None
     assert input_record.data.columns == ["crn_company", "crn_town", "id"]
     assert input_record.ids == right.ids
     assert "left_id" in input_record.edges[model].columns

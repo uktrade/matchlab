@@ -19,6 +19,7 @@ from matchlab.stores import Fingerprint, Store
 
 if TYPE_CHECKING:
     # `matchlab.resolvers` imports this module
+    from matchlab.record import Record
     from matchlab.resolvers import Resolver
     from matchlab.resolvers.base import ResolverMethod
 
@@ -209,17 +210,24 @@ class Model(Step):
         left = self.left._read_cache(store)
         right = self.right._read_cache(store) if self.right else None
         self._prepared = False
+        self._prepare_baseline(left, right)
 
         if self.model_type == ModelType.LINKER:
-            self.model_instance.prepare(left, right)
-            self._prepared = True
             scores = self.model_instance.link(left=left, right=right)
         else:
-            self.model_instance.prepare(left)
-            self._prepared = True
             scores = self.model_instance.dedupe(data=left)
 
         store.store_model(fp, normalise_model_scores(scores))
+
+    def _prepare_baseline(self, left: pl.DataFrame, right: pl.DataFrame | None) -> None:
+        """Prepare the methodology on the complete collected inputs."""
+        if self.model_type == ModelType.LINKER:
+            if right is None:
+                raise RuntimeError("A linker requires a right input.")
+            self.model_instance.prepare(left, right)
+        else:
+            self.model_instance.prepare(left)
+        self._prepared = True
 
     def _ensure_prepared(self) -> None:
         """Prepare from collected inputs when collection used a cached artifact."""
@@ -227,13 +235,81 @@ class Model(Step):
         if self._prepared:
             return
         left = self.left._read_cache(store)
-        if self.model_type == ModelType.LINKER:
-            if self.right is None:
-                raise RuntimeError("A linker requires a right input.")
-            self.model_instance.prepare(left, self.right._read_cache(store))
+        right = self.right._read_cache(store) if self.right else None
+        self._prepare_baseline(left, right)
+
+    def _execute_record(
+        self,
+        store: Store,
+        *,
+        left: "Record | None" = None,
+        right: "Record | None" = None,
+    ) -> "Record":
+        """Score affected sides against the prepared baseline without writing edges.
+
+        A model is a data boundary. Its output has no current data. The edges and
+        affected IDs carry the work to resolver execution.
+        """
+        from matchlab.record import Record  # noqa: PLC0415 - avoids a cycle
+
+        if self._require_store() is not store:
+            raise ValueError("Record execution must use this model's collected store.")
+        if not self._prepared:
+            raise RuntimeError(
+                f"{self} is not prepared. Prepare from its collected inputs first."
+            )
+        if self.model_type == ModelType.DEDUPER:
+            if left is None or right is not None:
+                raise ValueError("A deduper requires only an affected left input.")
+            if left.data is None:
+                raise ValueError(
+                    "A deduper requires input data before the model boundary."
+                )
+            scores = self.model_instance.dedupe(left.data)
         else:
-            self.model_instance.prepare(left)
-        self._prepared = True
+            if left is None and right is None:
+                raise ValueError("A linker requires at least one affected input.")
+            if (
+                left is not None
+                and right is not None
+                and (
+                    left.source is not right.source
+                    or not left.source_data.equals(right.source_data)
+                )
+            ):
+                raise ValueError("Affected linker inputs must belong to one record.")
+            scores = self.model_instance.link(
+                left=self._record_data(left) if left is not None else None,
+                right=self._record_data(right) if right is not None else None,
+            )
+
+        edges = normalise_model_scores(scores)
+        inputs = [record for record in (left, right) if record is not None]
+        carrier = inputs[0]
+        ledger: dict[Model, pl.DataFrame] = {}
+        for record in inputs:
+            for model, prior in record.edges.items():
+                if model in ledger and not ledger[model].equals(prior):
+                    raise ValueError("Affected branches disagree on prior model edges.")
+                ledger[model] = prior.clone()
+        ledger[self] = edges
+        ids = set().union(*(record.ids for record in inputs))
+        ids.update(edges["left_id"].to_list())
+        ids.update(edges["right_id"].to_list())
+        return Record(
+            data=None,
+            ids=ids,
+            source=carrier.source,
+            source_data=carrier.source_data,
+            edges=ledger,
+        )
+
+    @staticmethod
+    def _record_data(record: "Record") -> pl.DataFrame:
+        """Require current record data on a linker input."""
+        if record.data is None:
+            raise ValueError("A linker requires input data before the model boundary.")
+        return record.data
 
     # -- data -------------------------------------------------------------------------
 

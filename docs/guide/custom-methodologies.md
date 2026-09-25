@@ -35,6 +35,8 @@ A linker treats supplied rows as additions to the prepared left or right input. 
 
 After a cache hit, a step prepares from the stored baseline when its methodology is first needed. It does not train merely to read a cached result.
 
+A model step scores affected input without storing the new edges. Its `Record` output contains no current data. It keeps the edges under that model and adds each touched ID to the affected set. An empty edge result still carries the affected IDs. The model passes both affected linker sides to `link()` in one call, so the methodology can apply its own matching rules.
+
 Each registry is keyed by class name, which is how a [plan document](./serialise.md) names your class.
 
 ## Settings and resources

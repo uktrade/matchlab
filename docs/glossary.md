@@ -120,7 +120,7 @@ Re-publishing the same label at the same resolver output is a no-op. Aiming an e
 
 ### Record
 
-An in-memory value for one incoming row as it moves through a collected plan. It holds the current data, affected IDs, a reference to its [source](#source), the original one-row extract and model edges. The source reference identifies the branch. It does not read the incoming row from the source location. A [transform](#transform) makes a new Record for its branch and leaves the original source evidence intact. A Record is not a [record step](#record-step) or a stored artifact.
+An immutable in-memory value for one incoming row as it moves through a collected plan. It holds current data, affected IDs, a reference to its [source](#source), the original one-row extract and model edges. Public access to its dataframes returns copies. The source reference identifies the branch. It does not read the incoming row from the source location. A [transform](#transform) returns a new Record with reshaped data and unchanged source evidence. A [model](#model) returns a new Record with no current data, its scored edges and the IDs they touch. It keeps the affected IDs even if it finds no edges. A Record is not a [record step](#record-step) or a stored artifact.
 
 ### Record step
 

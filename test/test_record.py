@@ -5,6 +5,7 @@ from unittest.mock import patch
 
 import polars as pl
 import pytest
+from pydantic import ValidationError
 
 from matchlab import Source, read_dataframe
 from matchlab.record import Record
@@ -118,3 +119,26 @@ def test_record_no_writes(source: Callable[..., Source], store: DuckDBStore) -> 
     assert store.read_source_extract(fp).equals(extract)
     assert store.read_source_leaves(fp).equals(leaves)
     assert store.stats().artifacts == artifacts
+
+
+def test_record_immutable(source: Callable[..., Source], store: DuckDBStore) -> None:
+    """Public state cannot mutate a record or its branch evidence."""
+    crn = source("crn").collect()
+    record = Record.from_input(crn, {"company": "acme", "town": "leeds"}, store)
+    data = record.data
+    source_data = record.source_data
+
+    with pytest.raises(ValidationError):
+        record.ids = frozenset()
+    with pytest.raises(AttributeError):
+        record.ids.add(42)
+    with pytest.raises(AttributeError, match="Record is immutable"):
+        record._data = None
+    with pytest.raises(TypeError):
+        record.edges[object()] = pl.DataFrame()
+
+    assert data is not None
+    data.drop_in_place("id")
+    source_data.drop_in_place("company")
+    assert "id" in record.data.columns
+    assert "company" in record.source_data.columns
