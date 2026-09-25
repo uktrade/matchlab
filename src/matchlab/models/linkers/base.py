@@ -10,11 +10,13 @@ from pydantic import BaseModel, ConfigDict, Field
 class Linker(BaseModel, ABC):
     """A methodology that finds candidate matches between two record steps.
 
-    A `Model` step calls `prepare()` once, then `link()`, each time it collects. Put
-    one-off setup in `prepare()` instead, for example fitting a model over both
-    datasets, so it doesn't repeat on every call to `link()`. `link()` must return a
-    table with `left_id`, `right_id`, and `score` columns. `normalise_model_scores`
-    casts that table to `SCHEMA_MODEL_EDGES`.
+    A `Model` step calls `prepare()` with both complete inputs before `link()`.
+    Supplied rows are additions to the prepared inputs, not replacements.
+    `link()` scores pairs involving at least one supplied row. When both sides are
+    supplied, it also scores new left rows against new right rows. It does not
+    return baseline-only pairs or change the prepared inputs. Collection supplies
+    both complete inputs. `link()` returns `left_id`, `right_id`, and `score`.
+    `normalise_model_scores` casts the result to `SCHEMA_MODEL_EDGES`.
 
     Every field is a setting unless marked `matchlab.resources.FromResources`. A
     fingerprint ignores a resource, so a marked field must not change what this scores.
@@ -36,10 +38,16 @@ class Linker(BaseModel, ABC):
 
     @abstractmethod
     def prepare(self, left: pl.DataFrame, right: pl.DataFrame) -> None:
-        """Run once before `link()`, for setup that shouldn't repeat per call."""
+        """Prepare complete left and right baseline inputs."""
         ...
 
     @abstractmethod
-    def link(self, left: pl.DataFrame, right: pl.DataFrame) -> pl.DataFrame:
-        """Score candidate matches between `left` and `right`."""
+    def link(
+        self, left: pl.DataFrame | None = None, right: pl.DataFrame | None = None
+    ) -> pl.DataFrame:
+        """Score pairs involving supplied rows against prepared and supplied rows.
+
+        At least one side must be supplied. Supplying both full baselines produces
+        the complete collection result.
+        """
         ...

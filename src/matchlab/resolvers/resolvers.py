@@ -116,6 +116,7 @@ class Resolver(RecordStep):
             resolver_resources=resources,
             resolver_instance=instance,
         )
+        self._prepared = False
         self._check_names()
 
     @property
@@ -228,6 +229,9 @@ class Resolver(RecordStep):
             position: store.read_model(model._fp)
             for position, model in enumerate(self.parents)
         }
+        self._prepared = False
+        self.resolver_instance.prepare(model_edges=edges)
+        self._prepared = True
         clusters = self.resolver_instance.compute_clusters(model_edges=edges)
 
         # materialise_resolver_output carries forward every leaf reachable through
@@ -261,6 +265,18 @@ class Resolver(RecordStep):
             resolver_output=materialise_resolver_output(clusters, upstream),
             sources={source.name: source._fp for source in self.sources},
         )
+
+    def _ensure_prepared(self) -> None:
+        """Prepare from collected model edges after a cache hit."""
+        store = self._require_store()
+        if self._prepared:
+            return
+        edges = {
+            position: store.read_model(model._fp)
+            for position, model in enumerate(self.parents)
+        }
+        self.resolver_instance.prepare(model_edges=edges)
+        self._prepared = True
 
     # -- data -------------------------------------------------------------------------
 

@@ -42,6 +42,38 @@ def _dedupe_crn(crn: mb.Source) -> mb.Resolver:
     ).resolve()
 
 
+@pytest.mark.parametrize(
+    ("build",),
+    [
+        pytest.param(lambda crn: crn.select(crn.f("company")), id="transform"),
+        pytest.param(
+            lambda crn: crn.dedupe(
+                mb.NaiveDeduper, {"unique_fields": [crn.f("company")]}
+            ),
+            id="model",
+        ),
+        pytest.param(_dedupe_crn, id="resolver"),
+    ],
+)
+def test_prepare_cached(
+    source: Callable[..., mb.Source],
+    build: Callable[[mb.Source], mb.Step],
+) -> None:
+    """A cache hit delays preparation until the rebuilt step needs its baseline."""
+    crn = source("crn")
+    first = build(crn).collect()
+    assert first._prepared
+
+    rebuilt = build(crn).collect()
+    assert rebuilt._fp == first._fp
+    assert not rebuilt._prepared
+
+    rebuilt._ensure_prepared()
+    assert rebuilt._prepared
+    rebuilt._ensure_prepared()
+    assert rebuilt._prepared
+
+
 def _apex(source: Callable[..., mb.Source]) -> tuple[mb.Resolver, mb.Source, mb.Source]:
     """Build the full dedupe → link plan without ever constructing a DAG."""
     crn = source("crn")
@@ -1467,6 +1499,9 @@ def test_edges_keyed_by_position(
         def __init__(self, wrapped: object) -> None:
             self.wrapped = wrapped
 
+        def prepare(self, model_edges: dict[int, pl.DataFrame]) -> None:
+            self.wrapped.prepare(model_edges=model_edges)
+
         def compute_clusters(
             self, model_edges: dict[int, pl.DataFrame]
         ) -> pl.DataFrame:
@@ -1499,6 +1534,9 @@ class _Unversioned(mb.Transformer):
     """A transformer whose output depends on code it never declared a version for."""
 
     column: str
+
+    def prepare(self, data: pl.DataFrame) -> None:
+        """No baseline state is needed."""
 
     def apply(self, data: pl.DataFrame) -> pl.DataFrame:
         return data.with_columns((pl.col(self.column) + _SUFFIX).alias("tag"))

@@ -84,6 +84,8 @@ Each kind keeps its own registry, so a custom methodology can be named in a [pla
 
 A methodology also says whether matchlab may cache what it computes, by declaring a [version](#version). See [Custom methodologies](guide/custom-methodologies.md).
 
+Transformers, dedupers, linkers, and resolver methods prepare on complete collected input before they run their action. A cached step prepares on demand from stored input if an action later needs it. Preparation is private runtime state. It does not change the step's settings or fingerprint.
+
 ### Model
 
 A step that scores candidate matches by running one [methodology](#methodology). A [deduper](#deduper) matches within one [record step](#record-step) via `.dedupe()`, and a [linker](#linker) matches between two via `.link()`. A model produces edges, not clusters. Turning edges into entities is a [resolver's](#resolver) job.

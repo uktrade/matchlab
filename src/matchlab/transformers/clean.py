@@ -39,6 +39,9 @@ class Clean(Transformer):
         reject_id_output(cleaning)
         return cleaning
 
+    def prepare(self, data: pl.DataFrame) -> None:
+        """This transform needs no baseline state."""
+
     def apply(self, data: pl.DataFrame) -> pl.DataFrame:
         """Add or replace the named columns, keeping the rest.
 

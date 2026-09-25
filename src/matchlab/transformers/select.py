@@ -29,6 +29,9 @@ class Select(Transformer):
             data["columns"] = columns
         super().__init__(**data)
 
+    def prepare(self, data: pl.DataFrame) -> None:
+        """This transform needs no baseline state."""
+
     def apply(self, data: pl.DataFrame) -> pl.DataFrame:
         """Project to `id` and the named columns, in that order."""
         kept = [column for column in self.columns if column != "id"]

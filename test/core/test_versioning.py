@@ -12,6 +12,9 @@ from matchlab.transformers import Transformer
 class _Unversioned(Transformer):
     """A transformer promising nothing about its own code."""
 
+    def prepare(self, data: pl.DataFrame) -> None:
+        """No baseline state is needed."""
+
     def apply(self, data: pl.DataFrame) -> pl.DataFrame:
         return data
 
@@ -37,6 +40,9 @@ def test_versioning_shadowed_by_field() -> None:
 
         class _Shadowed(Transformer):
             version: int = 1  # a field, not a ClassVar
+
+            def prepare(self, data: pl.DataFrame) -> None:
+                """No baseline state is needed."""
 
             def apply(self, data: pl.DataFrame) -> pl.DataFrame:
                 return data

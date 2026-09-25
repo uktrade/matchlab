@@ -168,6 +168,7 @@ class Model(Step):
             model_resources=resources,
             model_instance=instance,
         )
+        self._prepared = False
         self._check_names()
 
     # -- inputs -----------------------------------------------------------------------
@@ -207,15 +208,32 @@ class Model(Step):
     def _execute(self, store: Store, fp: Fingerprint) -> None:
         left = self.left._read_cache(store)
         right = self.right._read_cache(store) if self.right else None
+        self._prepared = False
 
         if self.model_type == ModelType.LINKER:
             self.model_instance.prepare(left, right)
+            self._prepared = True
             scores = self.model_instance.link(left=left, right=right)
         else:
             self.model_instance.prepare(left)
+            self._prepared = True
             scores = self.model_instance.dedupe(data=left)
 
         store.store_model(fp, normalise_model_scores(scores))
+
+    def _ensure_prepared(self) -> None:
+        """Prepare from collected inputs when collection used a cached artifact."""
+        store = self._require_store()
+        if self._prepared:
+            return
+        left = self.left._read_cache(store)
+        if self.model_type == ModelType.LINKER:
+            if self.right is None:
+                raise RuntimeError("A linker requires a right input.")
+            self.model_instance.prepare(left, self.right._read_cache(store))
+        else:
+            self.model_instance.prepare(left)
+        self._prepared = True
 
     # -- data -------------------------------------------------------------------------
 

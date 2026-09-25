@@ -55,8 +55,13 @@ class ResolverMethod(BaseModel, ABC):
     resolver_type: ClassVar[ResolverType]
 
     @abstractmethod
+    def prepare(self, model_edges: Mapping[int, pl.DataFrame]) -> None:
+        """Prepare from the complete edges, keyed by model input position."""
+        ...
+
+    @abstractmethod
     def compute_clusters(self, model_edges: Mapping[int, pl.DataFrame]) -> pl.DataFrame:
-        """Compute cluster assignments from model edges.
+        """Compute clusters from supplied edges using prepared state.
 
         Args:
             model_edges: Input position to that model's edges, conforming to

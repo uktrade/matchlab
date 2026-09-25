@@ -448,3 +448,268 @@ def test_link_no_matches(
 
     assert not identical
     assert len(results) == 0
+
+
+@pytest.mark.parametrize(
+    ("linker_class", "settings"),
+    [
+        pytest.param(
+            DeterministicLinker,
+            {"comparisons": [["l.key = r.key"], ["l.fallback = r.fallback"]]},
+            id="sequential",
+        ),
+        pytest.param(
+            WeightedDeterministicLinker,
+            {
+                "weighted_comparisons": [
+                    {"comparison": "l.key = r.key", "weight": 1},
+                ],
+                "threshold": 1,
+            },
+            id="weighted",
+        ),
+    ],
+)
+@pytest.mark.parametrize(
+    ("affected_side", "expected"),
+    [
+        pytest.param("left", {(3, 10)}, id="left"),
+        pytest.param("right", {(1, 30)}, id="right"),
+        pytest.param("both", {(3, 10), (1, 30), (3, 30)}, id="both"),
+    ],
+)
+def test_affected_pairs(
+    linker_class: type[Linker],
+    settings: dict[str, Any],
+    affected_side: str,
+    expected: set[tuple[int, int]],
+) -> None:
+    """Preview includes every affected category, but no baseline-only pairs."""
+    linker = linker_class.model_validate(settings)
+    baseline_left = pl.DataFrame(
+        {"id": [1, 2], "key": ["a", "b"], "fallback": ["a", "b"]}
+    )
+    baseline_right = pl.DataFrame(
+        {"id": [10, 20], "key": ["a", "b"], "fallback": ["a", "b"]}
+    )
+    affected_left = pl.DataFrame({"id": [3], "key": ["a"], "fallback": ["a"]})
+    affected_right = pl.DataFrame({"id": [30], "key": ["a"], "fallback": ["a"]})
+    linker.prepare(baseline_left, baseline_right)
+
+    kwargs = {}
+    if affected_side in ("left", "both"):
+        kwargs["left"] = affected_left
+    if affected_side in ("right", "both"):
+        kwargs["right"] = affected_right
+    results = linker.link(**kwargs)
+
+    pairs = set(results.select("left_id", "right_id").iter_rows())
+    assert pairs == expected
+    assert (2, 20) not in pairs
+    assert results.schema == {
+        "left_id": pl.Int64,
+        "right_id": pl.Int64,
+        "score": pl.Float32,
+    }
+    assert set(results["score"].to_list()) == {1.0}
+    assert len(results) == len(expected)
+
+
+@pytest.mark.parametrize(
+    ("linker_class", "settings"),
+    [
+        pytest.param(
+            DeterministicLinker,
+            {"comparisons": ["l.key = r.key"]},
+            id="deterministic",
+        ),
+        pytest.param(
+            WeightedDeterministicLinker,
+            {
+                "weighted_comparisons": [{"comparison": "l.key = r.key", "weight": 1}],
+                "threshold": 1,
+            },
+            id="weighted",
+        ),
+    ],
+)
+def test_affected_rejects_missing_inputs(
+    linker_class: type[Linker], settings: dict[str, Any]
+) -> None:
+    """Linking requires preparation and at least one affected side."""
+    linker = linker_class.model_validate(settings)
+    data = pl.DataFrame({"id": [1], "key": ["a"]})
+
+    with pytest.raises(RuntimeError, match="prepare"):
+        linker.link(left=data)
+
+    linker.prepare(data, data)
+    with pytest.raises(ValueError, match="affected side"):
+        linker.link()
+
+
+@pytest.mark.parametrize(
+    ("linker_class", "settings"),
+    [
+        pytest.param(
+            DeterministicLinker,
+            {"comparisons": ["l.key = r.key"]},
+            id="deterministic",
+        ),
+        pytest.param(
+            WeightedDeterministicLinker,
+            {
+                "weighted_comparisons": [{"comparison": "l.key = r.key", "weight": 1}],
+                "threshold": 1,
+            },
+            id="weighted",
+        ),
+    ],
+)
+def test_affected_prepared_baseline(
+    linker_class: type[Linker], settings: dict[str, Any]
+) -> None:
+    """Affected calls do not change later full-baseline collection results."""
+    linker = linker_class.model_validate(settings)
+    baseline_left = pl.DataFrame(
+        {"id": [1, 1, 2], "key": ["a", "c", "b"], "note": [None, None, None]}
+    )
+    baseline_right = pl.DataFrame(
+        {"id": [10, 20, 30], "key": ["a", "b", "c"], "note": [None, None, None]}
+    )
+    linker.prepare(baseline_left, baseline_right)
+
+    linker.link(
+        left=pl.DataFrame({"id": [3], "key": ["a"], "note": [None]}),
+        right=pl.DataFrame({"id": [40], "key": ["a"], "note": [None]}),
+    )
+    results = linker.link(left=baseline_left, right=baseline_right)
+
+    assert set(results.iter_rows()) == {
+        (1, 10, 1.0),
+        (1, 30, 1.0),
+        (2, 20, 1.0),
+    }
+    assert len(results) == 3
+
+
+@pytest.mark.parametrize(
+    ("linker_class", "settings"),
+    [
+        pytest.param(
+            DeterministicLinker,
+            {"comparisons": ["l.key = r.key"]},
+            id="deterministic",
+        ),
+        pytest.param(
+            WeightedDeterministicLinker,
+            {
+                "weighted_comparisons": [{"comparison": "l.key = r.key", "weight": 1}],
+                "threshold": 1,
+            },
+            id="weighted",
+        ),
+    ],
+)
+def test_affected_same_id_rows(
+    linker_class: type[Linker], settings: dict[str, Any]
+) -> None:
+    """Adding one variant of an ID keeps its other baseline variants available."""
+    linker = linker_class.model_validate(settings)
+    linker.prepare(
+        pl.DataFrame({"id": [1, 2], "key": ["old", "baseline"]}),
+        pl.DataFrame({"id": [10, 20, 30], "key": ["old", "new", "baseline"]}),
+    )
+
+    results = linker.link(
+        left=pl.DataFrame({"id": [1], "key": ["new"]}),
+        right=pl.DataFrame({"id": [40], "key": ["old"]}),
+    )
+
+    assert set(results.iter_rows()) == {(1, 20, 1.0), (1, 40, 1.0)}
+    assert len(results) == 2
+
+
+def test_affected_sequential_rounds() -> None:
+    """An early match removes its IDs before the next comparison runs."""
+    linker = DeterministicLinker(
+        comparisons=[["l.key = r.key"], ["l.fallback = r.fallback"]]
+    )
+    baseline_left = pl.DataFrame(
+        {"id": [1, 2], "key": ["a", "b"], "fallback": ["z", "z"]}
+    )
+    baseline_right = pl.DataFrame(
+        {"id": [10, 20], "key": ["a", "other"], "fallback": ["z", "z"]}
+    )
+    linker.prepare(baseline_left, baseline_right)
+
+    results = linker.link(left=baseline_left)
+
+    assert set(results.select("left_id", "right_id").iter_rows()) == {
+        (1, 10),
+        (2, 20),
+    }
+
+
+def test_affected_both_sides_share_sequential_rounds() -> None:
+    """First-round matches remove IDs before cross-side fallback matching."""
+    linker = DeterministicLinker(
+        comparisons=[["l.key = r.key"], ["l.fallback = r.fallback"]]
+    )
+    linker.prepare(
+        pl.DataFrame({"id": [1], "key": ["x"], "fallback": ["z"]}),
+        pl.DataFrame({"id": [10], "key": ["a"], "fallback": ["x"]}),
+    )
+
+    results = linker.link(
+        left=pl.DataFrame({"id": [3], "key": ["a"], "fallback": ["z"]}),
+        right=pl.DataFrame({"id": [30], "key": ["b"], "fallback": ["z"]}),
+    )
+
+    assert set(results.select("left_id", "right_id").iter_rows()) == {
+        (3, 10),
+        (1, 30),
+    }
+
+
+def test_affected_weighted_score_is_not_counted_twice() -> None:
+    """Every pair's conditions contribute once, including two-sided additions."""
+    linker = WeightedDeterministicLinker(
+        weighted_comparisons=[
+            {"comparison": "l.key = r.key", "weight": 2},
+            {"comparison": "l.fallback = r.fallback", "weight": 1},
+        ],
+        threshold=1,
+    )
+    linker.prepare(
+        pl.DataFrame({"id": [1, 2], "key": ["a", "b"], "fallback": ["x", "y"]}),
+        pl.DataFrame({"id": [10, 20], "key": ["a", "b"], "fallback": ["x", "y"]}),
+    )
+
+    results = linker.link(
+        left=pl.DataFrame({"id": [3], "key": ["a"], "fallback": ["x"]}),
+        right=pl.DataFrame({"id": [30], "key": ["a"], "fallback": ["x"]}),
+    )
+
+    assert set(results.iter_rows()) == {
+        (3, 10, 1.0),
+        (1, 30, 1.0),
+        (3, 30, 1.0),
+    }
+
+
+def test_affected_empty() -> None:
+    """No candidate pair leaves the prepared side's IDs in the output schema."""
+    linker = DeterministicLinker(comparisons=["l.key = r.key"])
+    left = pl.DataFrame({"id": [1], "key": ["a"]})
+    right = pl.DataFrame({"id": [10], "key": ["a"]})
+    linker.prepare(left, right)
+
+    results = linker.link(left=left.clear())
+
+    assert results.is_empty()
+    assert results.schema == {
+        "left_id": pl.Int64,
+        "right_id": pl.Int64,
+        "score": pl.Float32,
+    }

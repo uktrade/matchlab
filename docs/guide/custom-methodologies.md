@@ -1,6 +1,6 @@
 # Custom methodologies
 
-A methodology is the pluggable class a step runs. matchlab ships one for every kind of step. You write your own the same way each time. Subclass a base, declare your settings as fields, implement one method, then register the class.
+A methodology is the pluggable class a step runs. matchlab ships one for every kind of step. To write one, subclass a base, declare settings as fields, implement its methods, and register the class.
 
 ```python
 from typing import ClassVar
@@ -16,6 +16,9 @@ class Initials(mb.Transformer):
 
     column: str
 
+    def prepare(self, data: pl.DataFrame) -> None:
+        """This transform needs no baseline state."""
+
     def apply(self, data: pl.DataFrame) -> pl.DataFrame:
         initials = pl.col(self.column).str.extract_all(r"\b\w").list.join("")
         return data.with_columns(initials.alias("initials"))
@@ -25,6 +28,12 @@ mb.add_transformer_class(Initials)
 ```
 
 The base you subclass depends on the step. `Transformer` reshapes a record step. `Deduper` and `Linker` score candidate matches. `ResolverMethod` turns edges into clusters, and `Location` reads rows into a source.
+
+Transformers, dedupers, linkers, and resolver methods must implement `prepare()`. It receives the complete collected input. Their action methods then handle supplied work using that prepared state. A transformer or resolver method with no setup still implements a no-op `prepare()`. A deduper scores supplied rows against its prepared input.
+
+A linker treats supplied rows as additions to the prepared left or right input. When both sides are supplied, it scores new left rows against the prepared right, prepared left rows against the new right, and the new rows against each other. It does not return pairs made only from prepared rows or change either prepared input. During collection, both sides contain the full input.
+
+After a cache hit, a step prepares from the stored baseline when its methodology is first needed. It does not train merely to read a cached result.
 
 Each registry is keyed by class name, which is how a [plan document](./serialise.md) names your class.
 
@@ -50,7 +59,7 @@ ResourceError: 'engine' on Lookup is a setting, not a resource, so must be passe
 
 ## Declaring a version
 
-A fingerprint covers your settings. It does not cover the code those settings run. Edit `apply` and nothing in the key moves, so `collect()` hands back whatever the old code produced.
+A fingerprint covers your settings. It does not cover the code those settings run. Edit `prepare` or `apply` and nothing in the key moves, so `collect()` hands back whatever the old code produced.
 
 `version` is how you close that gap, and it is a promise:
 

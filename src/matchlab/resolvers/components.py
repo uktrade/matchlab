@@ -32,6 +32,9 @@ class Components(ResolverMethod):
         ),
     )
 
+    def prepare(self, model_edges: Mapping[int, pl.DataFrame]) -> None:
+        """This method needs no baseline state."""
+
     def compute_clusters(  # noqa: D102
         self,
         model_edges: Mapping[int, pl.DataFrame],

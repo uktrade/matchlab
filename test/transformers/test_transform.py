@@ -5,10 +5,11 @@ fixture but never collect. The identities hold before any warehouse read.
 """
 
 from collections.abc import Callable
+from typing import ClassVar
 
 import polars as pl
 import pytest
-from pydantic import ValidationError
+from pydantic import PrivateAttr, ValidationError
 
 from matchlab import Source
 from matchlab.stores import DuckDBStore
@@ -76,6 +77,9 @@ class _Double(Transformer):
 
     column: str
 
+    def prepare(self, data: pl.DataFrame) -> None:
+        """No baseline state is needed."""
+
     def apply(self, data: pl.DataFrame) -> pl.DataFrame:
         return data.with_columns((pl.col(self.column) * 2).alias(self.column))
 
@@ -97,6 +101,76 @@ def test_add_transformer_class_rejects_non_transformer() -> None:
     """The registry only accepts `Transformer` subclasses."""
     with pytest.raises(ValueError, match="not a subclass of Transformer"):
         add_transformer_class(str)
+
+
+class _Counting(Transformer):
+    """A transformer whose private state exposes preparation to its tests."""
+
+    _calls: int = PrivateAttr(default=0)
+    _fail_once: bool = PrivateAttr(default=False)
+
+    def prepare(self, data: pl.DataFrame) -> None:
+        self._calls += 1
+        if self._fail_once:
+            self._fail_once = False
+            raise ValueError("baseline unavailable")
+
+    def apply(self, data: pl.DataFrame) -> pl.DataFrame:
+        return data
+
+
+class _CachedCounting(_Counting):
+    """The same transformer with a stable collection fingerprint."""
+
+    version: ClassVar[int] = 1
+
+
+def test_transformer_instance_isolated(source: Callable[..., Source]) -> None:
+    """Each step owns its runtime state, even when built from one prepared value."""
+    transformer = _Counting()
+    transformer.prepare(pl.DataFrame())
+    crn = source("crn")
+    first = crn.transform(transformer)
+    second = crn.transform(transformer)
+
+    assert first.transformer is not transformer
+    assert first.transformer is not second.transformer
+    assert first.transformer._calls == second.transformer._calls == 0
+    first.collect()
+    assert first.transformer._calls == 1
+    assert second.transformer._calls == 0
+
+
+def test_prepare_cache_retry(source: Callable[..., Source]) -> None:
+    """A failed lazy prepare raises, then a later call can retry the same baseline."""
+    crn = source("crn")
+    crn.transform(_CachedCounting()).collect()
+    cached = crn.transform(_CachedCounting()).collect()
+    cached.transformer._fail_once = True
+
+    with pytest.raises(ValueError, match="baseline unavailable"):
+        cached._ensure_prepared()
+    assert not cached._prepared
+
+    cached._ensure_prepared()
+    assert cached.transformer._calls == 2
+    assert cached._prepared
+
+
+def test_prepare_refresh(source: Callable[..., Source]) -> None:
+    """A refreshed unversioned transform prepares again on its current input."""
+    step = source("crn").transform(_Counting())
+    step.collect()
+    step.collect()
+
+    assert step.transformer._calls == 2
+
+
+def test_prepare_uncollected(source: Callable[..., Source]) -> None:
+    """Runtime preparation cannot use a plan that has no collected baseline."""
+    step = source("crn").transform(_Counting())
+    with pytest.raises(RuntimeError, match="Call collect"):
+        step._ensure_prepared()
 
 
 @pytest.mark.parametrize(
@@ -165,6 +239,9 @@ def test_custom_transformer_id_replaced(
     """
 
     class ClobbersId(Transformer):
+        def prepare(self, data: pl.DataFrame) -> None:
+            """No baseline state is needed."""
+
         def apply(self, data: pl.DataFrame) -> pl.DataFrame:
             return data.with_columns(pl.col("crn_company").alias("id"))
 
@@ -179,6 +256,9 @@ def test_custom_transformer_id_drop(
     """Losing `id` altogether is the same failure, one step earlier."""
 
     class DropsId(Transformer):
+        def prepare(self, data: pl.DataFrame) -> None:
+            """No baseline state is needed."""
+
         def apply(self, data: pl.DataFrame) -> pl.DataFrame:
             return data.drop("id")
 

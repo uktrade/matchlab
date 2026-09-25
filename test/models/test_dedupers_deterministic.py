@@ -85,3 +85,51 @@ def test_recovers_planted(
 
     identical, report = linked.diff_model_edges(results, left=source)
     assert identical, report
+
+
+def test_affected_pairs() -> None:
+    """Only pairs touching an affected record appear, once per unordered ID pair."""
+    deduper = NaiveDeduper(unique_fields=["key"])
+    baseline = pl.DataFrame({"id": [1, 2, 4, 5], "key": ["a", "a", "b", "b"]})
+    affected = pl.DataFrame({"id": [3, 3, 6, 7, 8], "key": ["a", "a", "a", "c", "c"]})
+    deduper.prepare(baseline)
+
+    results = deduper.dedupe(affected)
+
+    pairs = {
+        frozenset((row["left_id"], row["right_id"])) for row in results.rows(named=True)
+    }
+    assert pairs == {
+        frozenset(pair) for pair in [(1, 3), (1, 6), (2, 3), (2, 6), (3, 6), (7, 8)]
+    }
+    assert len(results) == len(pairs)
+    assert results.schema == {
+        "left_id": pl.Int64,
+        "right_id": pl.Int64,
+        "score": pl.Float32,
+    }
+    assert set(results["score"].to_list()) == {1.0}
+
+
+def test_affected_requires_preparation() -> None:
+    """An affected input cannot be scored without a prepared baseline."""
+    deduper = NaiveDeduper(unique_fields=["key"])
+
+    with pytest.raises(RuntimeError, match="prepare"):
+        deduper.dedupe(pl.DataFrame({"id": [1], "key": ["a"]}))
+
+
+def test_affected_empty() -> None:
+    """An empty affected input emits no baseline-only pairs."""
+    baseline = pl.DataFrame({"id": [1, 2], "key": ["a", "a"]})
+    deduper = NaiveDeduper(unique_fields=["key"])
+    deduper.prepare(baseline)
+
+    results = deduper.dedupe(baseline.clear())
+
+    assert results.is_empty()
+    assert results.schema == {
+        "left_id": pl.Int64,
+        "right_id": pl.Int64,
+        "score": pl.Float32,
+    }

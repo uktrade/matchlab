@@ -43,6 +43,9 @@ class Group(Transformer):
         reject_id_output(aggregates)
         return aggregates
 
+    def prepare(self, data: pl.DataFrame) -> None:
+        """This transform needs no baseline state."""
+
     def apply(self, data: pl.DataFrame) -> pl.DataFrame:
         """Collapse each `id` to one row using the aggregate expressions.
 

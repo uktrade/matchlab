@@ -1,8 +1,8 @@
-"""Base class for transformer methodologies, and the DuckDB query runner some share.
+"""Base class for transformer methodologies and their shared DuckDB query runner.
 
-A `Transformer` is a pure function of a record step, called by a `Transform` step's
-`apply()` on every collect. Both input and output must carry `id`, the grouping every
-downstream model and resolver reads.
+A `Transform` prepares its transformer on the full input before applying it. Later
+calls may apply it to affected rows using that prepared state. Both input and output
+must carry `id`, the grouping every downstream model and resolver reads.
 
 Transformers are declarative and serialisable. Their fields are the configuration a
 `Transform` folds into its spec and cache key, so keep them to plain data, with no
@@ -43,8 +43,13 @@ class Transformer(BaseModel, ABC):
     version: ClassVar[int | None] = None
 
     @abstractmethod
+    def prepare(self, data: pl.DataFrame) -> None:
+        """Prepare reusable state from the complete input to this transform."""
+        ...
+
+    @abstractmethod
     def apply(self, data: pl.DataFrame) -> pl.DataFrame:
-        """Return `data` reshaped. Both the input and the output carry `id`."""
+        """Reshape supplied data using prepared state, preserving `id`."""
         ...
 
 

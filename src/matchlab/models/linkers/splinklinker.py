@@ -3,8 +3,9 @@
 import inspect
 import json
 from copy import deepcopy
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Literal, Protocol
 
+import duckdb
 import polars as pl
 from pydantic import (
     BaseModel,
@@ -19,10 +20,16 @@ from splink import DuckDBAPI, SettingsCreator
 from splink import Linker as SplinkLibLinkerClass
 from splink.internals.linker_components.training import LinkerTraining
 
-from matchlab.core.logging import logger
 from matchlab.models.linkers.base import Linker
 
 DEFAULT_TRAINING_SEED = 0
+# Splink's search API requires a strict weight cutoff, even when no probability
+# threshold is configured. Filter probabilities after searching instead.
+MIN_SEARCH_WEIGHT = -1e308
+
+
+class _SplinkResult(Protocol):
+    def as_duckdbpyrelation(self) -> duckdb.DuckDBPyRelation: ...
 
 
 class SplinkLinkerFunction(BaseModel):
@@ -64,7 +71,7 @@ class SplinkLinker(Linker):
     the same settings stay deterministic and cache-safe.
     """
 
-    version: ClassVar[int] = 1
+    version: ClassVar[int] = 2
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -132,12 +139,9 @@ class SplinkLinker(Linker):
     threshold: float | None = Field(
         default=None,
         description="""
-            The score above which matches will be kept.
-
-            None is used to indicate no threshold.
-            
-            Inclusive, so a value of 1 will keep only exact matches across all 
-            comparisons.
+            Keep predictions with a match probability at or above this value.
+            None keeps all predictions. A value of 1 keeps only predictions
+            whose match probability is 1.
         """,
         gt=0,
         le=1,
@@ -174,6 +178,8 @@ class SplinkLinker(Linker):
     _linker: SplinkLibLinkerClass
     _id_dtype_l: pl.DataType
     _id_dtype_r: pl.DataType
+    _baseline_left: pl.DataFrame
+    _baseline_right: pl.DataFrame
 
     @staticmethod
     def _schema_summary(data: pl.DataFrame) -> str:
@@ -206,31 +212,27 @@ class SplinkLinker(Linker):
         if right_only:
             details.append(f"Columns only on right: {right_only}")
         if differing_dtypes:
-            details.append("Differing dtypes: " + "; ".join(differing_dtypes))
+            details.append("Differing dtypes: " + ", ".join(differing_dtypes))
         return ValueError("\n".join(details))
 
     def prepare(self, left: pl.DataFrame, right: pl.DataFrame) -> None:
-        """Build the Splink linker over left and right, and run its training functions.
+        """Train on both complete inputs and retain their term frequencies."""
+        if self.left_id not in left.columns or self.right_id not in right.columns:
+            raise ValueError(f"Both inputs must contain the ID column {self.left_id!r}")
+        if left.schema != right.schema:
+            raise self._conformancy_error(left, right)
 
-        Runs each function in `settings.linker_training_functions`, in order, against
-        the built linker. `link()` then just predicts against the trained state.
-        """
         self._id_dtype_l = left[self.left_id].dtype
         self._id_dtype_r = right[self.right_id].dtype
-
-        if (set(left.columns) != set(right.columns)) or not left.dtypes == right.dtypes:
-            raise self._conformancy_error(left, right)
+        self._baseline_left = left.clone()
+        self._baseline_right = right.clone()
 
         # Convert to pandas for Splink compatibility
         left_pd = left.with_columns(pl.col(self.left_id).cast(pl.String)).to_pandas()
         right_pd = right.with_columns(pl.col(self.right_id).cast(pl.String)).to_pandas()
 
-        # A copy, because building a Splink linker writes into the settings it is
-        # given: it stamps a random `linker_uid` onto them. Handed our own object,
-        # that mutation lands in `SplinkSettings`, and so in this model's `spec` and
-        # its fingerprint, which would then be different after running than it was
-        # before. A step has to address the same artifact whether or not it has been
-        # run, and a random value could never be part of that address anyway.
+        # Splink adds a random linker_uid to its settings. Copy them so the
+        # model's fingerprint does not change when prepare() runs.
         self._linker = SplinkLibLinkerClass(
             input_table_or_tables=[left_pd, right_pd],
             input_table_aliases=["l", "r"],
@@ -249,43 +251,133 @@ class SplinkLinker(Linker):
             proc_func(**arguments)
 
     def link(
-        self, left: pl.DataFrame = None, right: pl.DataFrame = None
+        self, left: pl.DataFrame | None = None, right: pl.DataFrame | None = None
     ) -> pl.DataFrame:
-        """Predict match scores using the linker trained in `prepare()`.
+        """Score supplied additions against prepared and supplied opposite sides.
 
-        `left`/`right` are accepted only to satisfy the `Linker` contract. The data
-        was already fixed when `prepare()` built the underlying Splink linker, so
-        passing values here logs a warning and has no effect.
+        Only pairs touching a supplied row are returned. Training and term
+        frequencies always use the complete inputs passed to `prepare()`.
         """
-        if left is not None or right is not None:
-            logger.warning(
-                "Left and right data are declared in .prepare() for SplinkLinker. "
-                "These values will be ignored"
+        if not hasattr(self, "_linker"):
+            raise ValueError("Call prepare() before link()")
+        if left is None and right is None:
+            raise ValueError("Provide at least one affected side to link()")
+
+        if left is not None and left.schema != self._baseline_left.schema:
+            raise self._conformancy_error(left, self._baseline_left)
+        if right is not None and right.schema != self._baseline_right.schema:
+            raise self._conformancy_error(right, self._baseline_right)
+
+        # Full collection can predict directly from Splink's prepared inputs.
+        # Compare rows, not IDs, because an ID can have changed content.
+        if (
+            left is not None
+            and right is not None
+            and not left.is_empty()
+            and not right.is_empty()
+            and left.equals(self._baseline_left)
+            and right.equals(self._baseline_right)
+        ):
+            return self._select_scores(
+                self._linker.inference.predict(
+                    threshold_match_probability=(
+                        None if self.threshold == 1 else self.threshold
+                    )
+                )
             )
 
-        res = self._linker.inference.predict(threshold_match_probability=self.threshold)
+        predictions = []
+
+        # Splink searches both prepared datasets and puts each new row on the
+        # right. Keep prepared-right matches, then restore left-to-right order.
+        if (
+            left is not None
+            and not left.is_empty()
+            and not self._baseline_right.is_empty()
+        ):
+            found = self._linker.inference.find_matches_to_new_records(
+                left.with_columns(pl.col(self.left_id).cast(pl.String)).to_pandas(),
+                blocking_rules=self.linker_settings.blocking_rules_to_generate_predictions,
+                match_weight_threshold=MIN_SEARCH_WEIGHT,
+            )
+            predictions.append(self._select_scores(found, source="r", reverse=True))
+
+        # The right-side search also sees both prepared datasets. Keep only
+        # prepared-left matches.
+        if (
+            right is not None
+            and not right.is_empty()
+            and not self._baseline_left.is_empty()
+        ):
+            found = self._linker.inference.find_matches_to_new_records(
+                right.with_columns(pl.col(self.right_id).cast(pl.String)).to_pandas(),
+                blocking_rules=self.linker_settings.blocking_rules_to_generate_predictions,
+                match_weight_threshold=MIN_SEARCH_WEIGHT,
+            )
+            predictions.append(self._select_scores(found, source="l"))
+
+        # Splink scores every new-left/new-right pair here. Apply the configured
+        # blocking rules before returning the scores.
+        if (
+            left is not None
+            and right is not None
+            and not left.is_empty()
+            and not right.is_empty()
+        ):
+            compared = self._linker.inference.compare_two_records(
+                left.with_columns(pl.col(self.left_id).cast(pl.String)).to_pandas(),
+                right.with_columns(pl.col(self.right_id).cast(pl.String)).to_pandas(),
+                include_found_by_blocking_rules=True,
+            )
+            predictions.append(self._select_scores(compared, blocked=True))
+
+        if not predictions:
+            return pl.DataFrame(
+                schema={
+                    "left_id": self._id_dtype_l,
+                    "right_id": self._id_dtype_r,
+                    "score": pl.Float32,
+                }
+            )
+        return (
+            pl.concat(predictions)
+            .group_by("left_id", "right_id")
+            .agg(pl.col("score").max())
+        )
+
+    def _select_scores(
+        self,
+        result: _SplinkResult,
+        source: Literal["l", "r"] | None = None,
+        reverse: bool = False,
+        blocked: bool = False,
+    ) -> pl.DataFrame:
+        """Orient Splink predictions and keep only eligible pairs."""
+        predictions = result.as_duckdbpyrelation().pl().lazy()
+
+        if source is not None:
+            predictions = predictions.filter(
+                pl.col(f"{self.linker_settings.source_dataset_column_name}_l") == source
+            )
+
+        if blocked:
+            predictions = predictions.filter(pl.col("found_by_blocking_rules"))
+
+        if self.threshold is not None:
+            predictions = predictions.filter(
+                pl.col("match_probability") >= self.threshold
+            )
 
         return (
-            res.as_duckdbpyrelation()
-            .pl()
-            .lazy()
-            .select(
-                [
-                    f"{self.left_id}_l",
-                    f"{self.right_id}_r",
-                    "match_probability",
-                ]
+            predictions.select(
+                pl.col(f"{self.left_id}_{'r' if reverse else 'l'}")
+                .cast(self._id_dtype_l)
+                .alias("left_id"),
+                pl.col(f"{self.right_id}_{'l' if reverse else 'r'}")
+                .cast(self._id_dtype_r)
+                .alias("right_id"),
+                pl.col("match_probability").cast(pl.Float32).alias("score"),
             )
-            .with_columns(
-                [
-                    pl.col(f"{self.left_id}_l").cast(self._id_dtype_l).alias("left_id"),
-                    pl.col(f"{self.right_id}_r")
-                    .cast(self._id_dtype_r)
-                    .alias("right_id"),
-                    pl.col("match_probability").cast(pl.Float32).alias("score"),
-                ]
-            )
-            .select(["left_id", "right_id", "score"])
             # Multiple blocking rules can lead to multiple matches
             .group_by(["left_id", "right_id"])
             .agg(pl.col("score").max())
