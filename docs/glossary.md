@@ -118,6 +118,10 @@ Point a [label](#label) at a [resolver](#resolver)'s output, so it can be found 
 
 Re-publishing the same label at the same resolver output is a no-op. Aiming an existing label at a different resolver output needs `overwrite=True`, since that is how you lose track of what a label used to mean.
 
+### Record
+
+An in-memory value for one incoming row as it moves through a collected plan. It holds the current data, affected IDs, a reference to its [source](#source), the original one-row extract and model edges. The source reference identifies the branch. It does not read the incoming row from the source location. A [transform](#transform) makes a new Record for its branch and leaves the original source evidence intact. A Record is not a [record step](#record-step) or a stored artifact.
+
 ### Record step
 
 A record step is a kind of step whose job is to hold data that a [model](#model) can match over. It is not a table. Reading one gives a table with an id column holding the identity a model reads.

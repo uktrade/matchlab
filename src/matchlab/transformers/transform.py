@@ -3,7 +3,8 @@
 `Transform` is to `Transformer` what `Model` is to a `Deduper`/`Linker`, the lazy plan
 node that wraps a serialisable methodology, folds its configuration into a cache key,
 and runs it on collect. Its single input is a `RecordStep`, so transforms chain, each
-its own cached artifact.
+its own cached artifact. Record execution applies the prepared transformer to a
+branch-local copy without writing an artifact.
 """
 
 from typing import Any, ClassVar
@@ -11,6 +12,7 @@ from typing import Any, ClassVar
 import polars as pl
 
 from matchlab.core.kinds import StepKind
+from matchlab.record import Record
 from matchlab.recordstep import IdentifierRead, RecordStep
 from matchlab.resources import Resource
 from matchlab.specs import TransformSpec
@@ -144,7 +146,17 @@ class Transform(RecordStep):
         self.transformer.prepare(records)
         self._prepared = True
         reshaped = self.transformer.apply(records)
+        self._validate_id(records, reshaped)
 
+        store.store_transform(fp, reshaped)
+
+    def _validate_id(self, records: pl.DataFrame, reshaped: pl.DataFrame) -> None:
+        """Ensure a transformer passes through the ID used to group records.
+
+        Collection and transient execution both rely on this check. Custom
+        transformers can bypass the built-in guards and otherwise drop or replace
+        `id`, which would silently change how downstream models group records.
+        """
         # The built-ins refuse an `id` output when they are built. This catches a custom
         # transformer that writes one anyway.
         if "id" not in reshaped.columns:
@@ -160,7 +172,25 @@ class Transform(RecordStep):
                 "`id` is derived from record content and must pass through untouched."
             )
 
-        store.store_transform(fp, reshaped)
+    def _execute_record(self, record: Record, store: Store) -> Record:
+        """Apply this transform to one branch without storing or changing its input."""
+        if not self._prepared:
+            raise RuntimeError(
+                f"{self} is not prepared. Prepare from its collected input first."
+            )
+        data = record.data.clone()
+        reshaped = self.transformer.apply(data)
+        self._validate_id(record.data, reshaped)
+        return record.model_copy(
+            update={
+                "data": reshaped,
+                "ids": record.ids.copy(),
+                "source_data": record.source_data.clone(),
+                "edges": {
+                    model: edges.clone() for model, edges in record.edges.items()
+                },
+            }
+        )
 
     def _ensure_prepared(self) -> None:
         """Prepare from the collected input when collection used a cached artifact."""

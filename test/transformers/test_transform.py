@@ -11,7 +11,8 @@ import polars as pl
 import pytest
 from pydantic import PrivateAttr, ValidationError
 
-from matchlab import Source
+from matchlab import NaiveDeduper, Source
+from matchlab.record import Record
 from matchlab.stores import DuckDBStore
 from matchlab.transformers import (
     Clean,
@@ -265,3 +266,84 @@ def test_custom_transformer_id_drop(
     step = source("crn").transform(DropsId())
     with pytest.raises(ValueError, match="DropsId dropped the `id` column"):
         step.collect(store)
+
+
+def test_transform_record_branches(
+    source: Callable[..., Source], store: DuckDBStore
+) -> None:
+    """Two branches can reshape one input without sharing their mutable state."""
+    crn = source("crn")
+    cleaned = crn.clean({"upper": "upper(crn_company)"}).collect()
+    selected = crn.select("crn_town").collect()
+    input_record = Record.from_input(crn, {"company": "acme", "town": "leeds"}, store)
+    model = crn.dedupe(NaiveDeduper, {"unique_fields": ["crn_company"]})
+    input_record.edges[model] = pl.DataFrame({"left_id": [1]})
+
+    left = cleaned._execute_record(input_record, store)
+    right = selected._execute_record(input_record, store)
+    left.ids.add(42)
+    left.edges[model].drop_in_place("left_id")
+    left.source_data.drop_in_place("company")
+
+    assert left.data["upper"].item() == "ACME"
+    assert "crn_company" not in right.data.columns
+    assert "upper" not in right.data.columns
+    assert input_record.data.columns == ["crn_company", "crn_town", "id"]
+    assert input_record.ids == right.ids
+    assert "left_id" in input_record.edges[model].columns
+    assert "left_id" in right.edges[model].columns
+    assert "company" in input_record.source_data.columns
+    assert "company" in right.source_data.columns
+
+
+def test_transform_record_cached(
+    source: Callable[..., Source], store: DuckDBStore
+) -> None:
+    """A cached step needs its stored baseline prepared before record execution."""
+    crn = source("crn")
+    crn.select("crn_company").collect()
+    cached = crn.select("crn_company").collect()
+    record = Record.from_input(crn, {"company": "acme", "town": "leeds"}, store)
+
+    assert not cached._prepared
+    with pytest.raises(RuntimeError, match="not prepared"):
+        cached._execute_record(record, store)
+
+    cached._ensure_prepared()
+    output = cached._execute_record(record, store)
+    assert output.data.columns == cached._read_cache(store).columns
+    assert output.source_data.equals(record.source_data)
+
+
+@pytest.mark.parametrize(
+    ("apply", "message"),
+    [
+        pytest.param(lambda data: data.drop("id"), "dropped", id="dropped"),
+        pytest.param(
+            lambda data: data.with_columns(pl.col("crn_company").alias("id")),
+            "replaced",
+            id="replaced",
+        ),
+    ],
+)
+def test_transform_record_rejects_id(
+    source: Callable[..., Source],
+    store: DuckDBStore,
+    apply: Callable[[pl.DataFrame], pl.DataFrame],
+    message: str,
+) -> None:
+    """A custom transformer can keep IDs on collect but lose them online."""
+
+    class BadId(Transformer):
+        def prepare(self, data: pl.DataFrame) -> None:
+            """No baseline state is needed."""
+
+        def apply(self, data: pl.DataFrame) -> pl.DataFrame:
+            return apply(data) if data.height == 1 else data
+
+    crn = source("crn")
+    step = crn.transform(BadId()).collect()
+    record = Record.from_input(crn, {"company": "acme", "town": "leeds"}, store)
+
+    with pytest.raises(ValueError, match=f"BadId {message} the `id` column"):
+        step._execute_record(record, store)
