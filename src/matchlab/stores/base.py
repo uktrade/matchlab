@@ -198,6 +198,7 @@ class Store(ABC):
         source_fp: Fingerprint,
         source_name: str,
         resolver_fp: Fingerprint | None = None,
+        ids: set[int] | None = None,
     ) -> pl.DataFrame:
         """Return `(id, source, key, leaf)` for one source's records.
 
@@ -218,6 +219,8 @@ class Store(ABC):
                 and tags each row for the resolver output below.
             resolver_fp: Fingerprint of the resolver to read through, or `None` to read
                 the source's own leaves.
+            ids: Restrict rows to these returned IDs. `None` reads all rows. An empty
+                set returns no rows, after validating the stored artifacts.
         """
         ...
 

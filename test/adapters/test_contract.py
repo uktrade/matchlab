@@ -134,6 +134,32 @@ def test_read_identifiers_direct(
     assert out.schema["source"] == pl.Utf8
 
 
+@pytest.mark.parametrize(
+    ("ids", "keys"),
+    [
+        pytest.param({2}, ["k2"], id="one_leaf"),
+        pytest.param({2, 3}, ["k2", "k3"], id="two_leaves"),
+        pytest.param({999}, [], id="unknown_leaf"),
+        pytest.param(set(), [], id="empty"),
+    ],
+)
+def test_read_identifiers_direct_filtered(
+    store: Store,
+    fp: Fingerprints,
+    extract: pl.DataFrame,
+    leaves: pl.DataFrame,
+    ids: set[int],
+    keys: list[str],
+) -> None:
+    """A direct reading selects source leaves by the returned ID."""
+    store.store_source(fp.src, "key", extract, leaves)
+
+    out = store.read_identifiers(fp.src, "crn", ids=ids).sort("key")
+
+    assert out["key"].to_list() == keys
+    assert out.schema == store.read_identifiers(fp.src, "crn").schema
+
+
 def test_read_identifiers_through_resolver(
     store: Store,
     fp: Fingerprints,
@@ -151,6 +177,34 @@ def test_read_identifiers_through_resolver(
     # k1/k2 were clustered together upstream, so they share an id but keep their leaves.
     assert out["id"].to_list() == [10, 10]
     assert out["leaf"].to_list() == [1, 2]
+
+
+@pytest.mark.parametrize(
+    ("ids", "keys"),
+    [
+        pytest.param({10}, ["k1", "k2"], id="whole_root"),
+        pytest.param({10, 20}, ["k1", "k2"], id="other_source_excluded"),
+        pytest.param({1}, [], id="leaf_not_root"),
+        pytest.param(set(), [], id="empty"),
+    ],
+)
+def test_read_identifiers_resolver_filtered(
+    store: Store,
+    fp: Fingerprints,
+    extract: pl.DataFrame,
+    leaves: pl.DataFrame,
+    resolver_output: pl.DataFrame,
+    ids: set[int],
+    keys: list[str],
+) -> None:
+    """A resolver reading selects whole roots within the named source."""
+    store.store_source(fp.src, "key", extract, leaves)
+    store.store_resolver(fp.resolver, resolver_output)
+
+    out = store.read_identifiers(fp.src, "crn", fp.resolver, ids=ids).sort("key")
+
+    assert out["key"].to_list() == keys
+    assert out.schema == store.read_identifiers(fp.src, "crn", fp.resolver).schema
 
 
 def test_read_identifiers_one_source(
@@ -184,6 +238,18 @@ def test_read_identifiers_missing_raises(
     store.store_source(fp.src, "key", extract, leaves)
     with pytest.raises(KeyError):
         store.read_identifiers(fp.src, "crn", fp.resolver)
+
+
+def test_read_identifiers_empty_missing_raises(
+    store: Store, fp: Fingerprints, extract: pl.DataFrame, leaves: pl.DataFrame
+) -> None:
+    """An empty filter does not hide a missing source or resolver."""
+    with pytest.raises(KeyError):
+        store.read_identifiers(fp.src, "crn", ids=set())
+
+    store.store_source(fp.src, "key", extract, leaves)
+    with pytest.raises(KeyError):
+        store.read_identifiers(fp.src, "crn", fp.resolver, ids=set())
 
 
 # -- sampling -------------------------------------------------------------------------
