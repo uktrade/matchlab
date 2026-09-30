@@ -18,7 +18,7 @@ def test_explode_cross_product() -> None:
         }
     )
 
-    result = Explode().apply(data).sort("a")
+    result = Explode().prepare(data).apply(data, baseline=data).sort("a")
 
     assert result["a"].to_list() == ["x1", "x2"]
     assert result["b"].to_list() == ["y1", "y1"]
@@ -29,7 +29,7 @@ def test_explode_deduplicates_values() -> None:
     """A value repeated across an id's rows counts once, not once per repeat."""
     data = pl.DataFrame({"id": [1, 1, 1], "a": ["x1", "x1", "x2"]})
 
-    result = Explode().apply(data).sort("a")
+    result = Explode().prepare(data).apply(data, baseline=data).sort("a")
 
     assert result["a"].to_list() == ["x1", "x2"]
 
@@ -38,7 +38,7 @@ def test_explode_keeps_id_without_value() -> None:
     """An id with no non-null value in a column keeps its row, rather than vanishing."""
     data = pl.DataFrame({"id": [1], "a": ["x1"], "b": [None]})
 
-    result = Explode().apply(data)
+    result = Explode().prepare(data).apply(data, baseline=data)
 
     assert result.height == 1
     assert result["b"].to_list() == [None]
@@ -55,7 +55,7 @@ def test_explode_over_max_raises() -> None:
     )
 
     with pytest.raises(ValueError, match="id 1"):
-        Explode(max_combinations=3).apply(data)
+        Explode(max_combinations=3).prepare(data).apply(data, baseline=data)
 
 
 def test_explode_non_positive_max_rejected() -> None:

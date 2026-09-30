@@ -42,6 +42,37 @@ def _dedupe_crn(crn: mb.Source) -> mb.Resolver:
     ).resolve()
 
 
+@pytest.mark.parametrize(
+    ("build",),
+    [
+        pytest.param(lambda crn: crn.select(crn.f("company")), id="transform"),
+        pytest.param(
+            lambda crn: crn.dedupe(
+                mb.NaiveDeduper, {"unique_fields": [crn.f("company")]}
+            ),
+            id="model",
+        ),
+        pytest.param(_dedupe_crn, id="resolver"),
+    ],
+)
+def test_prepare_cached(
+    source: Callable[..., mb.Source],
+    build: Callable[[mb.Source], mb.Transform | mb.Model | mb.Resolver],
+) -> None:
+    """A cache hit delays preparation until the rebuilt step needs its baseline."""
+    crn = source("crn")
+    first = build(crn).collect()
+    assert first._prepared is not None
+
+    rebuilt = build(crn).collect()
+    assert rebuilt._fp == first._fp
+    assert rebuilt._prepared is None
+
+    prepared = rebuilt._ensure_prepared()
+    assert prepared is rebuilt._prepared
+    assert rebuilt._ensure_prepared() is prepared
+
+
 def _apex(source: Callable[..., mb.Source]) -> tuple[mb.Resolver, mb.Source, mb.Source]:
     """Build the full dedupe → link plan without ever constructing a DAG."""
     crn = source("crn")
@@ -1458,25 +1489,26 @@ def test_edges_keyed_by_position(
 
     seen: dict[int, int] = {}
 
-    class Spy:
-        """Wrap the methodology rather than patching it.
-
-        `ResolverMethod` is a pydantic model and rejects undeclared attributes.
-        """
-
-        def __init__(self, wrapped: object) -> None:
-            self.wrapped = wrapped
-
-        def compute_clusters(
-            self, model_edges: dict[int, pl.DataFrame]
-        ) -> pl.DataFrame:
-            seen.update({position: len(df) for position, df in model_edges.items()})
-            return self.wrapped.compute_clusters(model_edges=model_edges)
-
-    # Past the read-only guard: a test double, not a configuration change.
     methodology = resolver.resolver_instance
-    object.__setattr__(resolver, "resolver_instance", Spy(methodology))
-    resolver.collect()
+    original = mb.Components.compute_clusters
+
+    def compute_clusters(
+        method: mb.Components,
+        prepared_state: object,
+        model_edges: dict[int, pl.DataFrame],
+        *,
+        baseline_model_edges: dict[int, pl.DataFrame],
+    ) -> pl.DataFrame:
+        seen.update({position: len(df) for position, df in model_edges.items()})
+        return original(
+            method,
+            prepared_state,
+            model_edges,
+            baseline_model_edges=baseline_model_edges,
+        )
+
+    with patch.object(mb.Components, "compute_clusters", compute_clusters):
+        resolver.collect()
 
     assert set(seen) == {0, 1}
     assert methodology.thresholds == {1: 0.8}
@@ -1500,7 +1532,9 @@ class _Unversioned(mb.Transformer):
 
     column: str
 
-    def apply(self, data: pl.DataFrame) -> pl.DataFrame:
+    def apply(
+        self, prepared_state: object, data: pl.DataFrame, *, baseline: pl.DataFrame
+    ) -> pl.DataFrame:
         return data.with_columns((pl.col(self.column) + _SUFFIX).alias("tag"))
 
 

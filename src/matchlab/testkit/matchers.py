@@ -199,12 +199,22 @@ class PerfectDeduper(Deduper):
 
     truth_id: str
 
-    def prepare(self, data: pl.DataFrame) -> None:
-        """No preparation required."""
-
-    def dedupe(self, data: pl.DataFrame) -> pl.DataFrame:
+    def dedupe(
+        self, prepared_state: object, data: pl.DataFrame, *, baseline: pl.DataFrame
+    ) -> pl.DataFrame:
         """Emit edges between records sharing a true entity."""
-        return _ANSWERS[self.truth_id].dedupe_edges(data)
+        if baseline is None:
+            raise RuntimeError("Call prepare() before dedupe()")
+        records = pl.concat([baseline, data]).unique()
+        affected_ids = data["id"].to_list()
+        return (
+            _ANSWERS[self.truth_id]
+            .dedupe_edges(records)
+            .filter(
+                pl.col("left_id").is_in(affected_ids)
+                | pl.col("right_id").is_in(affected_ids)
+            )
+        )
 
 
 class PerfectLinker(Linker):
@@ -214,12 +224,27 @@ class PerfectLinker(Linker):
 
     truth_id: str
 
-    def prepare(self, left: pl.DataFrame, right: pl.DataFrame) -> None:
-        """No preparation required."""
-
-    def link(self, left: pl.DataFrame, right: pl.DataFrame) -> pl.DataFrame:
-        """Emit edges between records sharing a true entity."""
-        return _ANSWERS[self.truth_id].link_edges(left, right)
+    def link(
+        self,
+        prepared_state: object,
+        left: pl.DataFrame | None = None,
+        right: pl.DataFrame | None = None,
+        *,
+        baseline_left: pl.DataFrame,
+        baseline_right: pl.DataFrame,
+    ) -> pl.DataFrame:
+        """Emit edges involving affected rows without changing the prepared inputs."""
+        if left is None and right is None:
+            raise ValueError("Provide at least one affected side to link()")
+        answer = _ANSWERS[self.truth_id]
+        edges = []
+        if left is not None:
+            edges.append(answer.link_edges(left, baseline_right))
+        if right is not None:
+            edges.append(answer.link_edges(baseline_left, right))
+        if left is not None and right is not None:
+            edges.append(answer.link_edges(left, right))
+        return pl.concat(edges).unique(subset=["left_id", "right_id"])
 
 
 add_model_class(PerfectDeduper)

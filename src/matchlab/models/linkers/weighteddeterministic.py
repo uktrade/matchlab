@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field, field_validator
 from matchlab.core.sql import SQLCondition
 from matchlab.models import comparison
 from matchlab.models.linkers.base import Linker
+from matchlab.models.linkers.deterministic import _combine_input
 
 
 class WeightedComparison(BaseModel):
@@ -41,7 +42,7 @@ class WeightedComparison(BaseModel):
 class WeightedDeterministicLinker(Linker):
     """Scores a pair by the weighted share of comparisons it matches on."""
 
-    version: ClassVar[int] = 1
+    version: ClassVar[int] = 2
 
     weighted_comparisons: list[WeightedComparison] = Field(
         description="A list of tuples in the form of a comparison, and a weight."
@@ -57,24 +58,27 @@ class WeightedDeterministicLinker(Linker):
         le=1,
     )
 
-    _id_dtype_l: pl.DataType
-    _id_dtype_r: pl.DataType
+    def link(
+        self,
+        prepared_state: object,
+        left: pl.DataFrame | None = None,
+        right: pl.DataFrame | None = None,
+        *,
+        baseline_left: pl.DataFrame,
+        baseline_right: pl.DataFrame,
+    ) -> pl.DataFrame:
+        """Score supplied additions against the baseline and each other.
 
-    def prepare(self, left: pl.DataFrame, right: pl.DataFrame) -> None:
-        """No preparation needed."""
-        pass
-
-    def link(self, left: pl.DataFrame, right: pl.DataFrame) -> pl.DataFrame:
-        """Score each pair by summed matching weight over total weight.
-
-        Keeps only pairs scoring at or above `settings.threshold`.
+        Keep only pairs scoring at or above `threshold`.
         """
-        self._id_dtype_l = left[self.left_id].dtype
-        self._id_dtype_r = right[self.right_id].dtype
+        if left is None and right is None:
+            raise ValueError("Provide at least one affected side to link()")
 
         # Used below but ruff can't detect
-        left_df = left.clone()  # noqa: F841
-        right_df = right.clone()  # noqa: F841
+        left_df = _combine_input(baseline_left, left)  # noqa: F841
+        right_df = _combine_input(  # noqa: F841
+            baseline_right, right
+        )
 
         match_subquery = []
         weights = []
@@ -82,7 +86,7 @@ class WeightedDeterministicLinker(Linker):
         for weighted_comparison in self.weighted_comparisons:
             match_subquery.append(
                 f"""
-                    select distinct on (list_sort([raw.left_id, raw.right_id]))
+                    select distinct on (raw.left_id, raw.right_id)
                         raw.left_id,
                         raw.right_id,
                         1.0 * {weighted_comparison.weight} as score
@@ -93,7 +97,8 @@ class WeightedDeterministicLinker(Linker):
                         from
                             left_df l
                         inner join right_df r on
-                            {weighted_comparison.comparison}
+                            ({weighted_comparison.comparison})
+                            and (l._matchlab_affected or r._matchlab_affected)
                     ) raw
                 """
             )
@@ -122,8 +127,8 @@ class WeightedDeterministicLinker(Linker):
             .pl()
             .with_columns(
                 [
-                    pl.col("left_id").cast(self._id_dtype_l),
-                    pl.col("right_id").cast(self._id_dtype_r),
+                    pl.col("left_id").cast(baseline_left[self.left_id].dtype),
+                    pl.col("right_id").cast(baseline_right[self.right_id].dtype),
                     pl.col("score").cast(pl.Float32),
                 ]
             )

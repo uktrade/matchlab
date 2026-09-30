@@ -13,6 +13,26 @@ from matchlab.models import comparison
 from matchlab.models.linkers.base import Linker
 
 
+def _combine_input(
+    baseline: pl.DataFrame, affected: pl.DataFrame | None
+) -> pl.DataFrame:
+    """Keep distinct baseline rows alongside supplied rows, marking the latter."""
+    if affected is None:
+        return baseline.with_columns(pl.lit(False).alias("_matchlab_affected"))
+    remaining = baseline.join(
+        affected.select(baseline.columns).unique(),
+        on=baseline.columns,
+        how="anti",
+        nulls_equal=True,
+    )
+    return pl.concat(
+        [
+            remaining.with_columns(pl.lit(False).alias("_matchlab_affected")),
+            affected.with_columns(pl.lit(True).alias("_matchlab_affected")),
+        ]
+    )
+
+
 class DeterministicLinker(Linker):
     """A deterministic linker that links based on a set of boolean conditions.
 
@@ -22,7 +42,7 @@ class DeterministicLinker(Linker):
     after each round).
     """
 
-    version: ClassVar[int] = 1
+    version: ClassVar[int] = 2
 
     comparisons: list[SQLCondition] | list[list[SQLCondition]] = Field(
         description="""
@@ -77,21 +97,28 @@ class DeterministicLinker(Linker):
             "comparisons must be a string, list of strings, or list of lists"
         )
 
-    def prepare(self, left: pl.DataFrame, right: pl.DataFrame) -> None:
-        """No preparation needed."""
-        pass
+    def link(
+        self,
+        prepared_state: object,
+        left: pl.DataFrame | None = None,
+        right: pl.DataFrame | None = None,
+        *,
+        baseline_left: pl.DataFrame,
+        baseline_right: pl.DataFrame,
+    ) -> pl.DataFrame:
+        """Link supplied additions against the prepared baseline and each other.
 
-    def link(self, left: pl.DataFrame, right: pl.DataFrame) -> pl.DataFrame:
-        """Link the left and right dataframes.
-
-        If comparisons is a flat list, applies all comparisons in parallel.
-        If comparisons is a nested list, applies each round sequentially,
-        removing matched records from the pool after each round.
+        Sequential rounds share one call, so earlier matches leave the pool
+        before later rounds run.
         """
+        if left is None and right is None:
+            raise ValueError("Provide at least one affected side to link()")
+
         con: duckdb.DuckDBPyConnection = duckdb.connect(":memory:")
         try:
             all_matches: list[pl.DataFrame] = []
-            remaining_left, remaining_right = left, right
+            remaining_left = _combine_input(baseline_left, left)
+            remaining_right = _combine_input(baseline_right, right)
 
             for round_num, round_comparisons in enumerate(self.comparisons, start=1):
                 if remaining_left.is_empty() or remaining_right.is_empty():
@@ -126,7 +153,11 @@ class DeterministicLinker(Linker):
                         how="anti",
                     )
 
-            return self._finalise_results(all_matches)
+            return self._finalise_results(
+                all_matches,
+                baseline_left[self.left_id].dtype,
+                baseline_right[self.right_id].dtype,
+            )
         finally:
             con.close()
 
@@ -151,7 +182,8 @@ class DeterministicLinker(Linker):
                     1.0 AS score
                 FROM left_df l
                 INNER JOIN right_df r
-                    ON {condition}
+                    ON ({condition})
+                    AND (l._matchlab_affected OR r._matchlab_affected)
             """
             subqueries.append(subquery)
 
@@ -215,10 +247,19 @@ class DeterministicLinker(Linker):
             estimates.extend(self._traverse_plan(child, plan_type, depth + 1))
         return estimates
 
-    def _finalise_results(self, all_matches: list[pl.DataFrame]) -> pl.DataFrame:
+    def _finalise_results(
+        self,
+        all_matches: list[pl.DataFrame],
+        left_id_dtype: pl.DataType,
+        right_id_dtype: pl.DataType,
+    ) -> pl.DataFrame:
         """Combine matches from all rounds and ensure correct schema."""
         if all_matches:
             return pl.concat(all_matches).with_columns(pl.col("score").cast(pl.Float32))
-        return pl.DataFrame({"left_id": [], "right_id": [], "score": []}).with_columns(
-            pl.col("score").cast(pl.Float32)
+        return pl.DataFrame(
+            schema={
+                "left_id": left_id_dtype,
+                "right_id": right_id_dtype,
+                "score": pl.Float32,
+            }
         )

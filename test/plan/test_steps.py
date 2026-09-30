@@ -110,10 +110,9 @@ class NeedyDeduper(Deduper):
     unique_fields: list[str]
     session: FromResources[Engine]
 
-    def prepare(self, data: pl.DataFrame) -> None:
-        """Never called: this plan is inspected, not collected."""
-
-    def dedupe(self, data: pl.DataFrame) -> pl.DataFrame:
+    def dedupe(
+        self, prepared_state: object, data: pl.DataFrame, *, baseline: pl.DataFrame
+    ) -> pl.DataFrame:
         """Never called: this plan is inspected, not collected."""
         raise NotImplementedError
 

@@ -9,8 +9,8 @@ from matchlab.core.kinds import StepKind
 from matchlab.core.logging import logger
 from matchlab.core.schemas import SCHEMA_MODEL_EDGES
 from matchlab.models import dedupers, linkers
-from matchlab.models.dedupers.base import Deduper
-from matchlab.models.linkers.base import Linker
+from matchlab.models.dedupers.base import Deduper, PreparedDeduper
+from matchlab.models.linkers.base import Linker, PreparedLinker
 from matchlab.recordstep import RecordStep
 from matchlab.resources import Resource
 from matchlab.specs import ModelSpec, ModelType
@@ -23,8 +23,10 @@ if TYPE_CHECKING:
     from matchlab.resolvers.base import ResolverMethod
 
 _MODEL_CLASSES: dict[str, type[Linker] | type[Deduper]] = {
-    **dict(inspect.getmembers(dedupers, inspect.isclass)),
-    **dict(inspect.getmembers(linkers, inspect.isclass)),
+    name: cls
+    for module in (dedupers, linkers)
+    for name, cls in inspect.getmembers(module, inspect.isclass)
+    if issubclass(cls, Linker | Deduper) and not inspect.isabstract(cls)
 }
 
 
@@ -119,6 +121,7 @@ class Model(Step):
     model_settings: dict[str, Any]
     model_resources: dict[str, Resource]
     model_instance: Deduper | Linker
+    _prepared: PreparedDeduper | PreparedLinker | None
 
     def __init__(
         self,
@@ -168,6 +171,7 @@ class Model(Step):
             model_resources=resources,
             model_instance=instance,
         )
+        self._prepared = None
         self._check_names()
 
     # -- inputs -----------------------------------------------------------------------
@@ -207,15 +211,37 @@ class Model(Step):
     def _execute(self, store: Store, fp: Fingerprint) -> None:
         left = self.left._read_cache(store)
         right = self.right._read_cache(store) if self.right else None
+        self._prepared = None
 
-        if self.model_type == ModelType.LINKER:
-            self.model_instance.prepare(left, right)
-            scores = self.model_instance.link(left=left, right=right)
+        if isinstance(self.model_instance, Linker):
+            if right is None:
+                raise RuntimeError("A linker requires a right input.")
+            prepared = self.model_instance.prepare(left, right)
+            self._prepared = prepared
+            scores = prepared.link(
+                left=left, right=right, baseline_left=left, baseline_right=right
+            )
         else:
-            self.model_instance.prepare(left)
-            scores = self.model_instance.dedupe(data=left)
+            prepared = self.model_instance.prepare(left)
+            self._prepared = prepared
+            scores = prepared.dedupe(data=left, baseline=left)
 
         store.store_model(fp, normalise_model_scores(scores))
+
+    def _ensure_prepared(self) -> PreparedDeduper | PreparedLinker:
+        """Return runtime preparation, rebuilding from collected inputs when absent."""
+        store = self._require_store()
+        if self._prepared is not None:
+            return self._prepared
+        left = self.left._read_cache(store)
+        if isinstance(self.model_instance, Linker):
+            if self.right is None:
+                raise RuntimeError("A linker requires a right input.")
+            prepared = self.model_instance.prepare(left, self.right._read_cache(store))
+        else:
+            prepared = self.model_instance.prepare(left)
+        self._prepared = prepared
+        return prepared
 
     # -- data -------------------------------------------------------------------------
 

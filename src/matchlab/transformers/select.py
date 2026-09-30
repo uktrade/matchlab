@@ -29,7 +29,9 @@ class Select(Transformer):
             data["columns"] = columns
         super().__init__(**data)
 
-    def apply(self, data: pl.DataFrame) -> pl.DataFrame:
+    def apply(
+        self, prepared_state: object, data: pl.DataFrame, *, baseline: pl.DataFrame
+    ) -> pl.DataFrame:
         """Project to `id` and the named columns, in that order."""
         kept = [column for column in self.columns if column != "id"]
         return data.select("id", *kept)

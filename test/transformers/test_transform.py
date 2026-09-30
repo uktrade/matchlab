@@ -5,6 +5,8 @@ fixture but never collect. The identities hold before any warehouse read.
 """
 
 from collections.abc import Callable
+from typing import ClassVar
+from unittest.mock import patch
 
 import polars as pl
 import pytest
@@ -76,7 +78,9 @@ class _Double(Transformer):
 
     column: str
 
-    def apply(self, data: pl.DataFrame) -> pl.DataFrame:
+    def apply(
+        self, prepared_state: object, data: pl.DataFrame, *, baseline: pl.DataFrame
+    ) -> pl.DataFrame:
         return data.with_columns((pl.col(self.column) * 2).alias(self.column))
 
 
@@ -90,13 +94,101 @@ def test_add_transformer_class_makes_it_nameable(
     step = Transform(crn, "_Double", {"column": "n"})
 
     assert isinstance(step.transformer, _Double)
-    assert step.transformer.apply(pl.DataFrame({"n": [1, 2]}))["n"].to_list() == [2, 4]
+    assert step.transformer.prepare(pl.DataFrame({"n": [1, 2]})).apply(
+        pl.DataFrame({"n": [1, 2]}), baseline=pl.DataFrame({"n": [1, 2]})
+    )["n"].to_list() == [2, 4]
 
 
 def test_add_transformer_class_rejects_non_transformer() -> None:
     """The registry only accepts `Transformer` subclasses."""
     with pytest.raises(ValueError, match="not a subclass of Transformer"):
         add_transformer_class(str)
+
+
+class _Counting(Transformer):
+    """An identity transformer for runtime preparation lifecycle tests."""
+
+    def apply(
+        self, prepared_state: object, data: pl.DataFrame, *, baseline: pl.DataFrame
+    ) -> pl.DataFrame:
+        return data
+
+
+class _CachedCounting(_Counting):
+    """The same transformer with a stable collection fingerprint."""
+
+    version: ClassVar[int] = 1
+
+
+def test_transformer_instance_isolated(source: Callable[..., Source]) -> None:
+    """Each step starts without preparation even when given the same specification."""
+    transformer = _Counting()
+    prepared = transformer.prepare(pl.DataFrame())
+    crn = source("crn")
+    first = crn.transform(transformer)
+    second = crn.transform(transformer)
+
+    assert first.transformer is not transformer
+    assert first.transformer is not second.transformer
+    assert first._prepared is second._prepared is None
+    first.collect()
+    assert first._prepared is not None
+    assert first._prepared is not prepared
+    assert second._prepared is None
+
+
+def test_prepare_cache_retry(source: Callable[..., Source]) -> None:
+    """A failed lazy preparation can retry against the same collected baseline."""
+    crn = source("crn")
+    crn.transform(_CachedCounting()).collect()
+    cached = crn.transform(_CachedCounting()).collect()
+    prepared = cached.transformer.prepare(crn._read_cache(cached._require_store()))
+
+    with patch.object(
+        _CachedCounting,
+        "prepare",
+        side_effect=[ValueError("baseline unavailable"), prepared],
+    ) as prepare:
+        with pytest.raises(ValueError, match="baseline unavailable"):
+            cached._ensure_prepared()
+        assert cached._prepared is None
+        assert cached._ensure_prepared() is prepared
+        assert cached._ensure_prepared() is prepared
+        assert prepare.call_count == 2
+
+
+def test_prepare_refresh(source: Callable[..., Source]) -> None:
+    """Refreshing an unversioned transform replaces its prepared object."""
+    step = source("crn").transform(_Counting())
+    step.collect()
+    first = step._prepared
+    step.collect()
+
+    assert step._prepared is not None
+    assert step._prepared is not first
+
+
+def test_prepare_invalidated_on_different_cached_output(
+    source: Callable[..., Source],
+) -> None:
+    """Adopting another cached fingerprint drops the previous runtime preparation."""
+    crn = source("crn")
+    first = crn.transform(_Counting()).collect()
+    second = crn.transform(_Counting()).collect()
+    assert first._fp != second._fp
+    assert first._prepared is not None
+    with patch.object(Transform, "_fingerprint", return_value=second._fp):
+        first.collect()
+    assert first._fp == second._fp
+    assert first._prepared is None
+    assert first._ensure_prepared() is not second._prepared
+
+
+def test_prepare_uncollected(source: Callable[..., Source]) -> None:
+    """Runtime preparation requires a collected baseline."""
+    step = source("crn").transform(_Counting())
+    with pytest.raises(RuntimeError, match="Call collect"):
+        step._ensure_prepared()
 
 
 @pytest.mark.parametrize(
@@ -165,7 +257,9 @@ def test_custom_transformer_id_replaced(
     """
 
     class ClobbersId(Transformer):
-        def apply(self, data: pl.DataFrame) -> pl.DataFrame:
+        def apply(
+            self, prepared_state: object, data: pl.DataFrame, *, baseline: pl.DataFrame
+        ) -> pl.DataFrame:
             return data.with_columns(pl.col("crn_company").alias("id"))
 
     step = source("crn").transform(ClobbersId())
@@ -179,7 +273,9 @@ def test_custom_transformer_id_drop(
     """Losing `id` altogether is the same failure, one step earlier."""
 
     class DropsId(Transformer):
-        def apply(self, data: pl.DataFrame) -> pl.DataFrame:
+        def apply(
+            self, prepared_state: object, data: pl.DataFrame, *, baseline: pl.DataFrame
+        ) -> pl.DataFrame:
             return data.drop("id")
 
     step = source("crn").transform(DropsId())

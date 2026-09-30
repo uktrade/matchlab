@@ -1,8 +1,8 @@
-"""Base class for transformer methodologies, and the DuckDB query runner some share.
+"""Base class for transformer methodologies and their shared DuckDB query runner.
 
-A `Transformer` is a pure function of a record step, called by a `Transform` step's
-`apply()` on every collect. Both input and output must carry `id`, the grouping every
-downstream model and resolver reads.
+A `Transform` prepares its transformer on the full input before applying it. Later
+calls may apply it to affected rows using that prepared state. Both input and output
+must carry `id`, the grouping every downstream model and resolver reads.
 
 Transformers are declarative and serialisable. Their fields are the configuration a
 `Transform` folds into its spec and cache key, so keep them to plain data, with no
@@ -11,7 +11,7 @@ callables, exactly as a `Deduper`'s settings are.
 
 from abc import ABC, abstractmethod
 from collections.abc import Iterable
-from typing import ClassVar
+from typing import Any, ClassVar
 
 import duckdb
 import polars as pl
@@ -42,10 +42,40 @@ class Transformer(BaseModel, ABC):
     # See `matchlab.core.versioning`.
     version: ClassVar[int | None] = None
 
+    def prepare(self, data: pl.DataFrame) -> "PreparedTransformer":
+        """Return runtime preparation from the full baseline without changing self.
+
+        Override this to return derived state; the default needs no setup.
+        """
+        return PreparedTransformer(methodology=self)
+
     @abstractmethod
-    def apply(self, data: pl.DataFrame) -> pl.DataFrame:
-        """Return `data` reshaped. Both the input and the output carry `id`."""
+    def apply(
+        self,
+        prepared_state: Any,  # noqa: ANN401 - opaque state owned by the author
+        data: pl.DataFrame,
+        *,
+        baseline: pl.DataFrame,
+    ) -> pl.DataFrame:
+        """Reshape supplied data using prepared state, preserving `id`."""
         ...
+
+
+class PreparedTransformer(BaseModel):
+    """In-memory preparation for one Transformer, independent of its specification.
+
+    State can contain arbitrary backend objects and need not be serialisable.
+    Baseline data is supplied explicitly to each action by the caller.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid", arbitrary_types_allowed=True)
+
+    methodology: Transformer
+    state: Any = None
+
+    def apply(self, data: pl.DataFrame, *, baseline: pl.DataFrame) -> pl.DataFrame:
+        """Reshape supplied rows using this preparation and the explicit baseline."""
+        return self.methodology.apply(self.state, data, baseline=baseline)
 
 
 def reject_id_output(names: Iterable[str]) -> None:

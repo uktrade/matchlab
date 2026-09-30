@@ -3,7 +3,7 @@
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from enum import StrEnum
-from typing import ClassVar, Final
+from typing import Any, ClassVar, Final
 
 import polars as pl
 import pyarrow as pa
@@ -54,11 +54,28 @@ class ResolverMethod(BaseModel, ABC):
 
     resolver_type: ClassVar[ResolverType]
 
+    def prepare(
+        self, model_edges: Mapping[int, pl.DataFrame]
+    ) -> "PreparedResolverMethod":
+        """Return preparation from complete edges without changing this specification.
+
+        Override this to return derived state; the default needs no setup.
+        """
+        return PreparedResolverMethod(methodology=self)
+
     @abstractmethod
-    def compute_clusters(self, model_edges: Mapping[int, pl.DataFrame]) -> pl.DataFrame:
-        """Compute cluster assignments from model edges.
+    def compute_clusters(
+        self,
+        prepared_state: Any,  # noqa: ANN401 - opaque state owned by the author
+        model_edges: Mapping[int, pl.DataFrame],
+        *,
+        baseline_model_edges: Mapping[int, pl.DataFrame],
+    ) -> pl.DataFrame:
+        """Compute clusters from supplied edges using prepared state.
 
         Args:
+            prepared_state: Derived runtime state returned by preparation.
+            baseline_model_edges: Complete collected edges used for preparation.
             model_edges: Input position to that model's edges, conforming to
                 SCHEMA_MODEL_EDGES. Positions index the resolver's inputs, in the
                 order they were given, and are what per-model settings key by.
@@ -67,3 +84,29 @@ class ResolverMethod(BaseModel, ABC):
             A Polars DataFrame which conforms to SCHEMA_CLUSTERS
         """
         ...
+
+
+class PreparedResolverMethod(BaseModel):
+    """In-memory preparation for one ResolverMethod, independent of its specification.
+
+    State can contain arbitrary backend objects and need not be serialisable.
+    Baseline data is supplied explicitly to each action by the caller.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid", arbitrary_types_allowed=True)
+
+    methodology: ResolverMethod
+    state: Any = None
+
+    def compute_clusters(
+        self,
+        model_edges: Mapping[int, pl.DataFrame],
+        *,
+        baseline_model_edges: Mapping[int, pl.DataFrame],
+    ) -> pl.DataFrame:
+        """Cluster supplied edges using this preparation and explicit baseline edges."""
+        return self.methodology.compute_clusters(
+            self.state,
+            model_edges,
+            baseline_model_edges=baseline_model_edges,
+        )

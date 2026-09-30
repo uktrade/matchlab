@@ -24,7 +24,9 @@ def test_components_uses_thresholds() -> None:
         )
     }
 
-    clusters = method.compute_clusters(model_edges=model_edges)
+    clusters = method.prepare(model_edges).compute_clusters(
+        model_edges=model_edges, baseline_model_edges=model_edges
+    )
 
     grouped_clusters = {
         frozenset(group["child_id"].to_list())
@@ -35,7 +37,11 @@ def test_components_uses_thresholds() -> None:
 
 def test_components_no_edges() -> None:
     """`Components.compute_clusters` works with no data."""
-    clusters = Components().compute_clusters(model_edges={})
+    clusters = (
+        Components()
+        .prepare({})
+        .compute_clusters(model_edges={}, baseline_model_edges={})
+    )
     assert clusters.height == 0
     assert clusters.schema == pl.Schema(SCHEMA_CLUSTERS)
 
@@ -64,7 +70,9 @@ def test_components_merges_models() -> None:
         ),
     }
 
-    clusters = method.compute_clusters(model_edges=model_edges)
+    clusters = method.prepare(model_edges).compute_clusters(
+        model_edges=model_edges, baseline_model_edges=model_edges
+    )
 
     grouped_clusters = {
         frozenset(group["child_id"].to_list())
@@ -82,8 +90,8 @@ def test_components_threshold_no_edges() -> None:
     """
     method = Components(thresholds={7: 0.5})
 
-    clusters = method.compute_clusters(
-        model_edges={
+    clusters = method.prepare(
+        {
             0: pl.DataFrame(
                 {"left_id": [1], "right_id": [2], "score": [0.9]},
                 schema={
@@ -93,6 +101,27 @@ def test_components_threshold_no_edges() -> None:
                 },
             )
         }
+    ).compute_clusters(
+        model_edges={
+            0: pl.DataFrame(
+                {"left_id": [1], "right_id": [2], "score": [0.9]},
+                schema={
+                    "left_id": pl.UInt64,
+                    "right_id": pl.UInt64,
+                    "score": pl.Float32,
+                },
+            )
+        },
+        baseline_model_edges={
+            0: pl.DataFrame(
+                {"left_id": [1], "right_id": [2], "score": [0.9]},
+                schema={
+                    "left_id": pl.UInt64,
+                    "right_id": pl.UInt64,
+                    "score": pl.Float32,
+                },
+            )
+        },
     )
 
     assert {

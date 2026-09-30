@@ -10,7 +10,7 @@ from matchlab.core.kinds import StepKind
 from matchlab.core.resolver_output import materialise_resolver_output
 from matchlab.models import Model
 from matchlab.recordstep import IdentifierRead, RecordStep, build_record_step
-from matchlab.resolvers.base import ResolverMethod
+from matchlab.resolvers.base import PreparedResolverMethod, ResolverMethod
 from matchlab.resolvers.components import Components
 from matchlab.resources import Resource
 from matchlab.sources import Source
@@ -56,6 +56,7 @@ class Resolver(RecordStep):
     resolver_class: type[ResolverMethod]
     resolver_settings: dict[str, Any]
     resolver_resources: dict[str, Resource]
+    _prepared: PreparedResolverMethod | None
     resolver_instance: ResolverMethod
 
     def __init__(
@@ -116,6 +117,7 @@ class Resolver(RecordStep):
             resolver_resources=resources,
             resolver_instance=instance,
         )
+        self._prepared = None
         self._check_names()
 
     @property
@@ -228,7 +230,12 @@ class Resolver(RecordStep):
             position: store.read_model(model._fp)
             for position, model in enumerate(self.parents)
         }
-        clusters = self.resolver_instance.compute_clusters(model_edges=edges)
+        self._prepared = None
+        prepared = self.resolver_instance.prepare(model_edges=edges)
+        self._prepared = prepared
+        clusters = prepared.compute_clusters(
+            model_edges=edges, baseline_model_edges=edges
+        )
 
         # materialise_resolver_output carries forward every leaf reachable through
         # this resolver's inputs, including records no model formed an edge over
@@ -261,6 +268,19 @@ class Resolver(RecordStep):
             resolver_output=materialise_resolver_output(clusters, upstream),
             sources={source.name: source._fp for source in self.sources},
         )
+
+    def _ensure_prepared(self) -> PreparedResolverMethod:
+        """Prepare from collected model edges after a cache hit."""
+        store = self._require_store()
+        if self._prepared is not None:
+            return self._prepared
+        edges = {
+            position: store.read_model(model._fp)
+            for position, model in enumerate(self.parents)
+        }
+        prepared = self.resolver_instance.prepare(model_edges=edges)
+        self._prepared = prepared
+        return prepared
 
     # -- data -------------------------------------------------------------------------
 

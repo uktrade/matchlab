@@ -43,7 +43,9 @@ class Group(Transformer):
         reject_id_output(aggregates)
         return aggregates
 
-    def apply(self, data: pl.DataFrame) -> pl.DataFrame:
+    def apply(
+        self, prepared_state: object, data: pl.DataFrame, *, baseline: pl.DataFrame
+    ) -> pl.DataFrame:
         """Collapse each `id` to one row using the aggregate expressions.
 
         A non-aggregate expression raises DuckDB's own error, naming the column.

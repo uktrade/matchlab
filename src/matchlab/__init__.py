@@ -22,16 +22,16 @@ from importlib.metadata import version
 from matchlab.document import PlanDocument, dump, load
 from matchlab.models import Model, add_model_class
 from matchlab.models.dedupers import NaiveDeduper
-from matchlab.models.dedupers.base import Deduper
+from matchlab.models.dedupers.base import Deduper, PreparedDeduper
 from matchlab.models.linkers import (
     DeterministicLinker,
     SplinkLinker,
     WeightedDeterministicLinker,
 )
-from matchlab.models.linkers.base import Linker
+from matchlab.models.linkers.base import Linker, PreparedLinker
 from matchlab.recordstep import RecordStep
 from matchlab.resolvers import Components, Resolver
-from matchlab.resolvers.base import ResolverMethod
+from matchlab.resolvers.base import PreparedResolverMethod, ResolverMethod
 from matchlab.resolvers.resolvers import add_resolver_class
 from matchlab.resources import FromResources, Resource
 from matchlab.sources import (
@@ -50,6 +50,7 @@ from matchlab.transformers import (
     Clean,
     Explode,
     Group,
+    PreparedTransformer,
     Select,
     Transform,
     Transformer,
@@ -73,6 +74,10 @@ __all__ = (
     "Model",
     "NaiveDeduper",
     "PlanDocument",
+    "PreparedDeduper",
+    "PreparedLinker",
+    "PreparedResolverMethod",
+    "PreparedTransformer",
     "RecordStep",
     "RelationalDB",
     "Resolver",

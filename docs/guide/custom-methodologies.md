@@ -1,6 +1,6 @@
 # Custom methodologies
 
-A methodology is the pluggable class a step runs. matchlab ships one for every kind of step. You write your own the same way each time. Subclass a base, declare your settings as fields, implement one method, then register the class.
+A methodology is the pluggable class a step runs. matchlab ships one for every kind of step. To write one, subclass a base, declare settings as fields, implement its methods, and register the class.
 
 ```python
 from typing import ClassVar
@@ -16,7 +16,9 @@ class Initials(mb.Transformer):
 
     column: str
 
-    def apply(self, data: pl.DataFrame) -> pl.DataFrame:
+    def apply(
+        self, prepared_state: object, data: pl.DataFrame, *, baseline: pl.DataFrame
+    ) -> pl.DataFrame:
         initials = pl.col(self.column).str.extract_all(r"\b\w").list.join("")
         return data.with_columns(initials.alias("initials"))
 
@@ -25,6 +27,81 @@ mb.add_transformer_class(Initials)
 ```
 
 The base you subclass depends on the step. `Transformer` reshapes a record step. `Deduper` and `Linker` score candidate matches. `ResolverMethod` turns edges into clusters, and `Location` reads rows into a source.
+
+## Preparation and execution
+
+A methodology is a stable Pydantic specification. Its settings describe what to run; `prepare()` returns a separate object containing derived runtime state. Preparation must not change the methodology or its input frames.
+
+Each family returns its own prepared type and keeps its usual action name:
+
+| Methodology | Preparation returns | Prepared action |
+| --- | --- | --- |
+| `Transformer` | `PreparedTransformer` | `apply(data, *, baseline)` |
+| `Deduper` | `PreparedDeduper` | `dedupe(data, *, baseline)` |
+| `Linker` | `PreparedLinker` | `link(left=None, right=None, *, baseline_left, baseline_right)` |
+| `ResolverMethod` | `PreparedResolverMethod` | `compute_clusters(model_edges, *, baseline_model_edges)` |
+
+The prepared action delegates to the methodology's public action, passing its stored `state` as the first argument. Methodologies without setup can inherit the default `prepare()`, which returns a prepared object with `state=None`, as `Initials` does above. Override it when you need trained parameters, term frequencies, an index, or another derived object:
+
+```python
+class Centred(mb.Transformer):
+    """Centre values using the mean of the complete baseline."""
+
+    version: ClassVar[int] = 1
+    column: str
+
+    def prepare(self, data: pl.DataFrame) -> mb.PreparedTransformer:
+        mean = data[self.column].mean()
+        if mean is None:
+            raise ValueError("A baseline with numeric values is required")
+        return mb.PreparedTransformer(methodology=self, state=float(mean))
+
+    def apply(
+        self, prepared_state: float, data: pl.DataFrame, *, baseline: pl.DataFrame
+    ) -> pl.DataFrame:
+        return data.with_columns(
+            (pl.col(self.column) - prepared_state).alias(self.column)
+        )
+```
+
+You still write one methodology class. The prepared type supplies the delegation. Baseline frames are explicit action arguments; they are not hidden inside the prepared object. A backend such as Splink can retain its own input tables as part of the derived state it needs to score records.
+
+For a linker, preparation receives the complete left and right baselines. Rows supplied to the prepared `link()` action are additions or previews. The action scores these three combinations when both sides are supplied:
+
+```mermaid
+flowchart LR
+    BL[Complete left baseline] --> P[methodology.prepare]
+    BR[Complete right baseline] --> P
+    P --> S[PreparedLinker with derived state]
+    S --> A[prepared.link]
+    BL --> A
+    BR --> A
+    NL[Supplied left rows] --> A
+    NR[Supplied right rows] --> A
+    A --> L[Supplied left × baseline right]
+    A --> R[Baseline left × supplied right]
+    A --> N[Supplied left × supplied right]
+```
+
+```python
+prepared = linker.prepare(baseline_left, baseline_right)
+edges = prepared.link(
+    new_left,
+    new_right,
+    baseline_left=baseline_left,
+    baseline_right=baseline_right,
+)
+```
+
+Every returned pair involves a supplied row. The baselines remain unchanged. During collection, both supplied sides are the complete baselines, producing the complete result. A deduper similarly scores supplied rows against its explicit baseline and against each other.
+
+Use the baselines that produced the prepared state. One methodology can be prepared against different baselines; each returned object remains usable independently. Prepared objects may contain backend objects that cannot be serialised.
+
+### Step lifecycle and Store caching
+
+The owning step obtains complete collected inputs, prepares once, retains the returned object in memory, and calls its action with explicit baselines. Repeated actions can reuse that preparation. A newly built step starts without a prepared object.
+
+A Store cache hit returns the collected output without preparing. If a later action needs preparation, the step rebuilds it from the stored input baselines and retains it then. A refreshed execution replaces the old preparation. Prepared state contributes nothing to settings, fingerprints, or plan documents, and this feature does not persist it in the Store.
 
 Each registry is keyed by class name, which is how a [plan document](./serialise.md) names your class.
 
@@ -50,7 +127,7 @@ ResourceError: 'engine' on Lookup is a setting, not a resource, so must be passe
 
 ## Declaring a version
 
-A fingerprint covers your settings. It does not cover the code those settings run. Edit `apply` and nothing in the key moves, so `collect()` hands back whatever the old code produced.
+A fingerprint covers your settings. It does not cover the code those settings run. Edit `prepare` or `apply` and nothing in the key moves, so `collect()` hands back whatever the old code produced.
 
 `version` is how you close that gap, and it is a promise:
 

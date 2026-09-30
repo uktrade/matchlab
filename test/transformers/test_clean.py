@@ -18,7 +18,11 @@ def test_clean_derives_and_keeps_unreferenced() -> None:
         {"id": [1, 2, 3], "crn_company": ["A", "B", "C"], "crn_town": ["x", "y", "z"]}
     )
 
-    result = Clean(cleaning={"name": "lower(crn_company)"}).apply(data)
+    result = (
+        Clean(cleaning={"name": "lower(crn_company)"})
+        .prepare(data)
+        .apply(data, baseline=data)
+    )
 
     assert set(result.columns) == {"id", "crn_company", "crn_town", "name"}
     assert result["name"].to_list() == ["a", "b", "c"]
@@ -29,7 +33,11 @@ def test_clean_alias_replaces_in_place() -> None:
     """An expression aliased to an existing column overwrites it, not duplicates it."""
     data = pl.DataFrame({"id": [1, 2], "crn_company": ["A", "B"]})
 
-    result = Clean(cleaning={"crn_company": "lower(crn_company)"}).apply(data)
+    result = (
+        Clean(cleaning={"crn_company": "lower(crn_company)"})
+        .prepare(data)
+        .apply(data, baseline=data)
+    )
 
     assert result.columns.count("crn_company") == 1
     assert result["crn_company"].to_list() == ["a", "b"]
@@ -41,7 +49,11 @@ def test_clean_multi_column_expression() -> None:
         {"id": [1, 2], "first": ["John", "Jane"], "last": ["Doe", "Smith"]}
     )
 
-    result = Clean(cleaning={"name": "first || ' ' || last"}).apply(data)
+    result = (
+        Clean(cleaning={"name": "first || ' ' || last"})
+        .prepare(data)
+        .apply(data, baseline=data)
+    )
 
     assert result["name"].to_list() == ["John Doe", "Jane Smith"]
 
@@ -50,7 +62,7 @@ def test_clean_invalid_sql_raises() -> None:
     """Invalid cleaning SQL fails at apply time, not silently."""
     data = pl.DataFrame({"id": [1, 2], "crn_company": ["A", "B"]})
     with pytest.raises(ParseError):
-        Clean(cleaning={"x": "foo bar baz"}).apply(data)
+        Clean(cleaning={"x": "foo bar baz"}).prepare(data).apply(data, baseline=data)
 
 
 def test_clean_empty_rejected() -> None:

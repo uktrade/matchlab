@@ -25,7 +25,8 @@ def test_group_one_row_per_id() -> None:
                 "towns": "list(distinct crn_town)",
             }
         )
-        .apply(data)
+        .prepare(data)
+        .apply(data, baseline=data)
         .sort("id")
     )
 
@@ -40,7 +41,9 @@ def test_group_non_aggregate_raises() -> None:
     data = pl.DataFrame({"id": [1, 1], "crn_town": ["london", "leeds"]})
 
     with pytest.raises(duckdb.BinderException, match="crn_town"):
-        Group(aggregates={"crn_town": "crn_town"}).apply(data)
+        Group(aggregates={"crn_town": "crn_town"}).prepare(data).apply(
+            data, baseline=data
+        )
 
 
 def test_group_empty_rejected() -> None:

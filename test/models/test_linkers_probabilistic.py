@@ -280,14 +280,14 @@ def test_splink_default_seed() -> None:
         "matchlab.models.linkers.splinklinker.SplinkLibLinkerClass",
         FakeSplinkLibraryLinker,
     ):
-        linker.prepare(left, right)
+        prepared = linker.prepare(left, right)
 
     assert linker.linker_training_functions[0].arguments == {"max_pairs": 1e4}
     assert linker.linker_training_functions[1].arguments == {
         "max_pairs": 2e4,
         "seed": 7,
     }
-    assert linker._linker.training.calls == [
+    assert prepared.state.training.calls == [
         {"max_pairs": 1e4, "seed": 0},
         {"max_pairs": 2e4, "seed": 7},
     ]

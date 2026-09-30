@@ -435,6 +435,8 @@ class Step(ABC):
         fp = self._fingerprint()
 
         if store.has(fp):  # cache hit, skip the work entirely
+            if fp != self._fp and hasattr(self, "_prepared"):
+                self._prepared = None
             self._fp = fp
             return StepStatus.CACHED
 

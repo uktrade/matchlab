@@ -12,7 +12,9 @@ from matchlab.transformers import Transformer
 class _Unversioned(Transformer):
     """A transformer promising nothing about its own code."""
 
-    def apply(self, data: pl.DataFrame) -> pl.DataFrame:
+    def apply(
+        self, prepared_state: object, data: pl.DataFrame, *, baseline: pl.DataFrame
+    ) -> pl.DataFrame:
         return data
 
 
@@ -38,7 +40,13 @@ def test_versioning_shadowed_by_field() -> None:
         class _Shadowed(Transformer):
             version: int = 1  # a field, not a ClassVar
 
-            def apply(self, data: pl.DataFrame) -> pl.DataFrame:
+            def apply(
+                self,
+                prepared_state: object,
+                data: pl.DataFrame,
+                *,
+                baseline: pl.DataFrame,
+            ) -> pl.DataFrame:
                 return data
 
     with pytest.raises(TypeError, match="declares `version` as a setting"):

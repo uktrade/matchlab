@@ -1,7 +1,7 @@
 """Base class for deduplication methodologies."""
 
 from abc import ABC, abstractmethod
-from typing import ClassVar, Literal
+from typing import Any, ClassVar, Literal
 
 import polars as pl
 from pydantic import BaseModel, ConfigDict, Field
@@ -10,11 +10,12 @@ from pydantic import BaseModel, ConfigDict, Field
 class Deduper(BaseModel, ABC):
     """A methodology that finds candidate duplicate pairs within one record step.
 
-    A `Model` step calls `prepare()` once, then `dedupe()`, each time it collects. Put
-    one-off setup in `prepare()` instead, for example fitting a model over the whole
-    dataset, so it doesn't repeat on every call to `dedupe()`. `dedupe()` must return
-    a table with `left_id`, `right_id`, and `score` columns. `normalise_model_scores`
-    casts that table to `SCHEMA_MODEL_EDGES`.
+    A `Model` step retains the `PreparedDeduper` returned by `prepare()`.
+    Preparation does not change this specification.
+    The action scores pairs involving supplied rows against that prepared input.
+    Collection supplies the full input as the affected rows. `dedupe()` returns
+    `left_id`, `right_id`, and `score`. `normalise_model_scores` casts the result
+    to `SCHEMA_MODEL_EDGES`.
 
     Every field is a setting unless marked `matchlab.resources.FromResources`. A
     fingerprint ignores a resource, so a marked field must not change what this scores.
@@ -31,12 +32,37 @@ class Deduper(BaseModel, ABC):
         default="id", description="The unique ID field in the data to dedupe"
     )
 
-    @abstractmethod
-    def prepare(self, data: pl.DataFrame) -> None:
-        """Run once before `dedupe()`, for setup that shouldn't repeat per call."""
-        ...
+    def prepare(self, data: pl.DataFrame) -> "PreparedDeduper":
+        """Return runtime preparation from the full baseline without changing self.
+
+        Override this to return derived state; the default needs no setup.
+        """
+        return PreparedDeduper(methodology=self)
 
     @abstractmethod
-    def dedupe(self, data: pl.DataFrame) -> pl.DataFrame:
-        """Score candidate duplicate pairs within `data`."""
+    def dedupe(
+        self,
+        prepared_state: Any,  # noqa: ANN401 - opaque state owned by the author
+        data: pl.DataFrame,
+        *,
+        baseline: pl.DataFrame,
+    ) -> pl.DataFrame:
+        """Score pairs involving `data` against the prepared input."""
         ...
+
+
+class PreparedDeduper(BaseModel):
+    """In-memory preparation for one Deduper, independent of its specification.
+
+    State can contain arbitrary backend objects and need not be serialisable.
+    Baseline data is supplied explicitly to each action by the caller.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid", arbitrary_types_allowed=True)
+
+    methodology: Deduper
+    state: Any = None
+
+    def dedupe(self, data: pl.DataFrame, *, baseline: pl.DataFrame) -> pl.DataFrame:
+        """Score supplied rows using this preparation and the explicit baseline."""
+        return self.methodology.dedupe(self.state, data, baseline=baseline)

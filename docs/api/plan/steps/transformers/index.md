@@ -1,6 +1,6 @@
 # Transformers
 
-The `Transformer` step. A transformer's methodology is a location, which it reads rows through and content-addresses them. It is where data enters a plan.
+The `Transform` step runs a `Transformer` methodology to reshape records. Preparation returns a `PreparedTransformer`; its `apply()` receives supplied rows and an explicit baseline.
 
 ::: matchlab.transformers.transform
     options:

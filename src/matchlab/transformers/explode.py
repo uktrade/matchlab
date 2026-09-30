@@ -40,7 +40,9 @@ class Explode(Transformer):
             raise ValueError("max_combinations must be positive.")
         return max_combinations
 
-    def apply(self, data: pl.DataFrame) -> pl.DataFrame:
+    def apply(
+        self, prepared_state: object, data: pl.DataFrame, *, baseline: pl.DataFrame
+    ) -> pl.DataFrame:
         """Cross-join each `id`'s columns to every combination of their values."""
         columns = [column for column in data.columns if column != "id"]
         if not columns:

@@ -6,7 +6,7 @@ Register a custom one with `add_transformer_class`, as `add_model_class` does a
 deduper.
 """
 
-from matchlab.transformers.base import Transformer
+from matchlab.transformers.base import PreparedTransformer, Transformer
 from matchlab.transformers.clean import Clean
 from matchlab.transformers.explode import Explode
 from matchlab.transformers.group import Group
@@ -17,6 +17,7 @@ __all__ = (
     "Clean",
     "Explode",
     "Group",
+    "PreparedTransformer",
     "Select",
     "Transform",
     "Transformer",
