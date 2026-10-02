@@ -9,6 +9,8 @@ can point their own SQL at the `resolver_output` table. That is the whole point.
 import os
 from collections.abc import Iterable, Mapping
 from pathlib import Path
+from typing import Literal
+from uuid import uuid4
 
 import duckdb
 import polars as pl
@@ -23,7 +25,14 @@ from matchlab.core.schemas import (
     check_schema_subset,
 )
 from matchlab.eval.judgements import Judgement
-from matchlab.stores.base import Fingerprint, PruneResult, Store, StoreStats
+from matchlab.stores.base import (
+    Fingerprint,
+    PruneResult,
+    Store,
+    StoreStats,
+    Transaction,
+    TransactionStats,
+)
 
 # Bumped whenever the stored shape changes, or stored IDs stop meaning what they did.
 # A store written by an older matchlab is recreated rather than half-read. That's the
@@ -153,15 +162,50 @@ class DuckDBStore(Store):
     def __init__(self, path: str | Path = ":memory:") -> None:
         """Open (or create) the store at `path`. Use `:memory:` for ephemeral stores."""
         self.path = str(path)
+        self._schema = "main"
         if self.path != ":memory:":
             Path(self.path).parent.mkdir(parents=True, exist_ok=True)
         self.conn = duckdb.connect(self.path)
         self._open_schema()
 
+    def transaction(self) -> "DuckDBTransaction":
+        """Create an empty provisional artifact overlay owned by this Store."""
+        return DuckDBTransaction(self)
+
+    def _promote(self, staged: "DuckDBStore") -> None:
+        """Copy staged artifacts atomically, preserving fingerprints and metadata."""
+        artifacts = staged.conn.execute("SELECT fp, kind FROM artifacts").fetchall()
+        self.conn.execute("BEGIN TRANSACTION")
+        try:
+            for fp, kind in artifacts:
+                if kind == StepKind.SOURCE:
+                    self.store_source(
+                        fp,
+                        staged.source_key_field(fp),
+                        staged.read_source_extract(fp),
+                        staged.read_source_leaves(fp),
+                    )
+                elif kind == StepKind.TRANSFORM:
+                    self.store_transform(fp, staged.read_transform(fp))
+                elif kind == StepKind.MODEL:
+                    self.store_model(fp, staged.read_model(fp))
+                elif kind == StepKind.RESOLVER:
+                    self.store_resolver(
+                        fp, staged.read_resolver(fp), staged.resolver_output_sources(fp)
+                    )
+                else:
+                    raise ValueError(f"Cannot promote artifact kind {kind!r}.")
+            self.conn.execute(f'DROP SCHEMA "{staged._schema}" CASCADE')
+            self.conn.execute("COMMIT")
+        except Exception:
+            self.conn.execute("ROLLBACK")
+            raise
+
     def _open_schema(self) -> None:
         """Create the schema, recreating the store if it predates this version."""
         existing = self.conn.execute(
-            "SELECT table_name FROM information_schema.tables WHERE table_name = 'meta'"
+            "SELECT table_name FROM information_schema.tables "
+            "WHERE table_name = 'meta' AND table_schema = current_schema()"
         ).fetchone()
         if existing:
             row = self.conn.execute("SELECT schema_version FROM meta").fetchone()
@@ -173,7 +217,7 @@ class DuckDBStore(Store):
         # made it.
         for (table,) in self.conn.execute(
             "SELECT table_name FROM information_schema.tables "
-            "WHERE table_schema = 'main'"
+            "WHERE table_schema = current_schema()"
         ).fetchall():
             self.conn.execute(f'DROP TABLE IF EXISTS "{table}" CASCADE')
 
@@ -261,6 +305,10 @@ class DuckDBStore(Store):
         much of it is reusable, and an in-memory store's size is no different: it
         allocates no blocks and has no file to measure.
         """
+        return self._stats(checkpoint=True)
+
+    def _stats(self, *, checkpoint: bool) -> DuckDBStoreStats:
+        """Measure this schema, optionally settling writes in the shared database."""
         if self.path == ":memory:":
             # `sum` over an empty table is NULL, so an untouched store needs the `or 0`
             # as much as a missing row does.
@@ -270,7 +318,8 @@ class DuckDBStore(Store):
             size = (resident[0] if resident else 0) or 0
             free, path = 0, None
         else:
-            self.conn.execute("CHECKPOINT")
+            if checkpoint:
+                self.conn.execute("CHECKPOINT")
             blocks = self.conn.execute(
                 "SELECT block_size, free_blocks FROM pragma_database_size()"
             ).fetchone()
@@ -363,6 +412,12 @@ class DuckDBStore(Store):
                 [source_name, source_fp],
             ).pl()
 
+        return self._read_resolver_identifiers(resolver_fp, source_name)
+
+    def _read_resolver_identifiers(
+        self, resolver_fp: Fingerprint, source_name: str
+    ) -> pl.DataFrame:
+        """Read one source's identifiers without loading other sources' rows."""
         if self._kind(resolver_fp) is not StepKind.RESOLVER:
             raise KeyError(f"No stored resolver for fingerprint {resolver_fp.hex()}")
         # Both predicates matter. `source` keeps this from scanning every source's
@@ -659,3 +714,151 @@ class DuckDBStore(Store):
 
     def close(self) -> None:
         self.conn.close()
+
+
+class _SchemaStore(DuckDBStore):
+    """Reuse Store operations in a private schema without changing parent settings."""
+
+    def __init__(self, parent: DuckDBStore) -> None:
+        self.path = parent.path
+        self._schema = f"tx_{uuid4().hex}"
+        self.conn = parent.conn.cursor()
+        self.conn.execute("BEGIN TRANSACTION")
+        try:
+            self.conn.execute(f'CREATE SCHEMA "{self._schema}"')
+            # A cursor has its own session settings, but shares the parent's database.
+            self.conn.execute(f"SET schema = '{self._schema}'")
+            self._open_schema()
+            self.conn.execute("COMMIT")
+        except Exception:
+            self.conn.execute("ROLLBACK")
+            self.conn.close()
+            raise
+
+    def stats(self) -> DuckDBStoreStats:
+        return self._stats(checkpoint=False)
+
+
+class DuckDBTransaction(Transaction):
+    """Stage artifacts in a private schema of the parent's DuckDB database.
+
+    An in-memory parent keeps staging in memory. A file-backed parent also stores
+    staging in its file. Rollback drops the staging schema but does not shrink the file.
+    There is no recovery protocol. A process crash can leave an abandoned schema.
+    """
+
+    def __init__(self, parent: DuckDBStore) -> None:
+        """Create an empty overlay without copying any parent artifacts."""
+        self._parent = parent
+        self._staged = _SchemaStore(parent)
+        self._state: Literal["active", "committed", "rolled back"] = "active"
+
+    def _writable(self) -> DuckDBStore:
+        if self._state != "active":
+            raise RuntimeError(f"Transaction is {self._state}; writes are not allowed.")
+        return self._staged
+
+    def _readable(self) -> None:
+        if self._state == "rolled back":
+            raise RuntimeError(
+                "Transaction is rolled back; recollect into a live Store."
+            )
+
+    def _reader(self, fp: Fingerprint) -> DuckDBStore:
+        self._readable()
+        if self._state == "active" and self._staged.has(fp):
+            return self._staged
+        return self._parent
+
+    def has(self, fp: Fingerprint) -> bool:
+        return self._reader(fp).has(fp)
+
+    def store_source(
+        self,
+        fp: Fingerprint,
+        key_field: str,
+        extract: pl.DataFrame,
+        leaves: pl.DataFrame,
+    ) -> None:
+        self._writable().store_source(fp, key_field, extract, leaves)
+
+    def read_source_extract(self, fp: Fingerprint) -> pl.DataFrame:
+        return self._reader(fp).read_source_extract(fp)
+
+    def read_source_leaves(self, fp: Fingerprint) -> pl.DataFrame:
+        return self._reader(fp).read_source_leaves(fp)
+
+    def source_key_field(self, fp: Fingerprint) -> str:
+        return self._reader(fp).source_key_field(fp)
+
+    def read_identifiers(
+        self,
+        source_fp: Fingerprint,
+        source_name: str,
+        resolver_fp: Fingerprint | None = None,
+    ) -> pl.DataFrame:
+        # Validate the source independently: the resolver may live in the other schema.
+        self.source_key_field(source_fp)
+        if resolver_fp is None:
+            return self.read_source_leaves(source_fp).select(
+                pl.col("leaf").alias("id"),
+                pl.lit(source_name, dtype=pl.Utf8).alias("source"),
+                "key",
+                "leaf",
+            )
+        return self._reader(resolver_fp)._read_resolver_identifiers(
+            resolver_fp, source_name
+        )
+
+    def store_transform(self, fp: Fingerprint, table: pl.DataFrame) -> None:
+        self._writable().store_transform(fp, table)
+
+    def read_transform(self, fp: Fingerprint) -> pl.DataFrame:
+        return self._reader(fp).read_transform(fp)
+
+    def store_model(self, fp: Fingerprint, edges: pl.DataFrame) -> None:
+        self._writable().store_model(fp, edges)
+
+    def read_model(self, fp: Fingerprint) -> pl.DataFrame:
+        return self._reader(fp).read_model(fp)
+
+    def store_resolver(
+        self,
+        fp: Fingerprint,
+        resolver_output: pl.DataFrame,
+        sources: Mapping[str, Fingerprint] | None = None,
+    ) -> None:
+        self._writable().store_resolver(fp, resolver_output, sources)
+
+    def read_resolver(self, fp: Fingerprint) -> pl.DataFrame:
+        return self._reader(fp).read_resolver(fp)
+
+    def resolver_output_sources(self, fp: Fingerprint) -> dict[str, Fingerprint]:
+        return self._reader(fp).resolver_output_sources(fp)
+
+    def stats(self) -> TransactionStats:
+        self._readable()
+        if self._state == "committed":
+            return TransactionStats(location="transaction (committed)", bytes=0)
+        staged = self._staged.stats()
+        return TransactionStats(
+            location=f"{self._staged.path}#{self._staged._schema}",
+            bytes=staged.bytes,
+            artifacts=staged.artifacts,
+        )
+
+    def rollback(self) -> None:
+        staged = self._writable()
+        staged.conn.execute(f'DROP SCHEMA "{staged._schema}" CASCADE')
+        self._state = "rolled back"
+        staged.close()
+
+    def commit(self) -> None:
+        staged = self._writable()
+        self._parent._promote(staged)
+        self._state = "committed"
+        staged.close()
+
+    def close(self) -> None:
+        if self._state == "active":
+            self.rollback()

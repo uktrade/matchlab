@@ -164,6 +164,15 @@ One node in a [plan](#plan). Steps are sources, transforms, models, or resolvers
 
 Where a plan's artifacts are stored and read back, keyed by [fingerprint](#fingerprint). Stores are not engines and do not resolve anything themselves. `DuckDBStore` is the reference implementation, backing a single DuckDB database file (or `:memory:`). A store keeps everything given to it until something explicitly [prunes](#prune) it or the storage itself is deleted.
 
+### Transaction
+
+A provisional view of a parent [Store](#store). It reads the parent's [artifacts](#artifact)
+and stages its own writes separately. Ordinary [collection](#collect) can use this view.
+Commit copies staged artifacts into the parent atomically. Rollback discards them.
+The view is not a snapshot and does not support concurrent changes to its parent.
+`Transaction` defines the abstract contract. `DuckDBTransaction` stages artifacts in a
+private schema of its parent's database, using memory or disk to match the parent.
+
 ### Transform
 
 A step that reshapes a [record step](#record-step) with a pluggable, serialisable **transformer**. `select` keeps only the named columns, `clean` derives new ones with DuckDB SQL while keeping the rest, `group` collapses each `id` to one row, and `Explode` gives one row per combination of each column's non-null values. `transform()` is the general verb they desugar to (`.clean(...)` is `.transform(Clean(...))`). `Explode` has no verb of its own, so it is reached only that way. `Transformer` is the base class. `Select`, `Clean`, `Group`, and `Explode` are the built-ins, and a custom one registers with `add_transformer_class`, the same pattern [dedupers](#deduper) and [linkers](#linker) plug in with. Its configuration is part of the plan and its [fingerprint](#fingerprint), like any [methodology](#methodology)'s settings.

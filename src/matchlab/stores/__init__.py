@@ -9,9 +9,11 @@ from matchlab.stores.base import (
     PruneResult,
     Store,
     StoreStats,
+    Transaction,
+    TransactionStats,
     format_bytes,
 )
-from matchlab.stores.duckdb import DuckDBStore, DuckDBStoreStats
+from matchlab.stores.duckdb import DuckDBStore, DuckDBStoreStats, DuckDBTransaction
 
 __all__ = (
     "Store",
@@ -20,5 +22,8 @@ __all__ = (
     "Fingerprint",
     "PruneResult",
     "StoreStats",
+    "Transaction",
+    "TransactionStats",
+    "DuckDBTransaction",
     "format_bytes",
 )

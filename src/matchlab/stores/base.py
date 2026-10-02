@@ -149,6 +149,16 @@ class Store(ABC):
     Implementations are single-user and local. `DuckDBStore` is the reference.
     """
 
+    def transaction(self) -> "Transaction":
+        """Create a provisional artifact view, if this backend supports one.
+
+        The view reads committed artifacts from this Store and isolates its writes
+        until commit. It does not imply snapshot isolation or concurrent-writer support.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support transactions."
+        )
+
     # -- existence / caching ----------------------------------------------------------
 
     @abstractmethod
@@ -442,3 +452,77 @@ class Store(ABC):
 
     def close(self) -> None:  # noqa: B027 - optional concrete hook, not abstract
         """Release any underlying resources. Override if needed."""
+
+
+class TransactionStats(StoreStats):
+    """Staged artifact counts with the backing storage's size.
+
+    The backing storage may be shared with the parent. Bytes are not necessarily
+    an isolated staging measurement. Collection summaries report only staged counts.
+    """
+
+    def describe(self, since: StoreStats | None = None) -> str:
+        """Report provisional artifacts without implying committed Store growth."""
+        count = sum(self.artifacts.values())
+        return f"Transaction {count} staged artifact{'' if count == 1 else 's'}"
+
+
+class Transaction(Store):
+    """A Store-owned provisional artifact view for ordinary DAG collection.
+
+    Reads prefer staged artifacts and otherwise use the parent. Writes stay staged
+    until commit. The parent must remain open and unchanged while the view is active.
+    This contract does not require snapshot isolation or concurrent-writer support.
+
+    Commit leaves a read-only route to the parent so collected results stay readable.
+    Rollback invalidates reads and writes. Recollect the plan into a live Store to
+    use it again. Closing a transaction never closes its parent.
+
+    Publication, evaluation, pruning, and nesting are unsupported by default.
+    """
+
+    @abstractmethod
+    def commit(self) -> None:
+        """Promote all staged artifacts atomically, keeping result reads available.
+
+        On promotion failure, leave the parent unchanged and staging active.
+        """
+        ...
+
+    @abstractmethod
+    def rollback(self) -> None:
+        """Discard staging and invalidate transaction-bound reads and writes."""
+        ...
+
+    @abstractmethod
+    def close(self) -> None:
+        """Discard active staging without closing the parent. Safe to repeat."""
+        ...
+
+    def publish(self, label: str, fp: Fingerprint) -> None:
+        raise NotImplementedError("Transactions do not support publication.")
+
+    def find(self, label: str) -> Fingerprint | None:
+        raise NotImplementedError("Transactions do not support publication.")
+
+    def labels(self) -> list[str]:
+        raise NotImplementedError("Transactions do not support publication.")
+
+    def store_judgement(self, judgement: Judgement, user_name: str = "local") -> None:
+        raise NotImplementedError("Transactions do not support evaluation.")
+
+    def read_eval_data(
+        self, tag: str | None = None
+    ) -> tuple[pl.DataFrame, pl.DataFrame]:
+        raise NotImplementedError("Transactions do not support evaluation.")
+
+    def sample(
+        self, resolver_fp: Fingerprint, n: int, seed: int | None = None
+    ) -> pl.DataFrame:
+        raise NotImplementedError("Transactions do not support evaluation.")
+
+    def prune(self, keep: Iterable[Fingerprint] = ()) -> PruneResult:
+        raise NotImplementedError("Transactions do not support pruning.")
+
+    def transaction(self) -> "Transaction":
+        raise NotImplementedError("Nested transactions are not supported.")
