@@ -6,7 +6,7 @@
     </picture>
 </p>
 
-**A local-first library for building, running and evaluating entity resolution pipelines.**
+**A local-first library for building, running and evaluating entity resolution pipelines.** TEST_PR
 
 Record matching is a chore. matchlab makes it a pipeline you can build, run, query and measure — on your machine, against your warehouse, with nothing to deploy.
 
