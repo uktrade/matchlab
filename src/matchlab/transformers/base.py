@@ -71,4 +71,4 @@ def run_sql(query: SQLQuery, data: pl.DataFrame) -> pl.DataFrame:
     """Execute one DuckDB query against `data`, registered as `data`."""
     with duckdb.connect(":memory:") as connection:
         connection.register("data", data)
-        return connection.execute(query).pl()
+        return connection.sql(query).pl()
