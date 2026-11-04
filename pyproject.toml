@@ -29,7 +29,7 @@ dependencies = [
     "pyarrow>=17.0.0",
     "pydantic>=2.9.2",
     "rich>=13.9.4",
-    "splink>=4.0.5,<4.1.0",
+    "splink>=5.0.0,<5.1.0",
     "sqlalchemy>=2.0.35",
     "sqlglot[c]>=30.0.3",
     "textual>=0.80",
@@ -132,6 +132,7 @@ docstring-code-format = true
 [tool.pytest.ini_options]
 testpaths = ["test"]
 asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
 pythonpath = ["."]
 addopts = "-n auto --dist=loadgroup"
 norecursedirs = "src"

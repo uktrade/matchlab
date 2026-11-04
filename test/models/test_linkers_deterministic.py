@@ -151,23 +151,14 @@ def configure_splink_linker(
     if not shared_fields:
         raise ValueError("Must have at least one shared field")
 
-    deterministic_matching_rules: list[str] = []
     blocking_rules_to_generate_predictions: list[BlockingRuleCreator] = []
     comparisons: list[ComparisonCreator] = []
 
     for field in shared_fields:
-        deterministic_matching_rules.append(f"l.{field} = r.{field}")
         blocking_rules_to_generate_predictions.append(brl.block_on(field))
-        comparisons.append(cl.ExactMatch(field).configure(m_probabilities=[1, 0]))
+        comparisons.append(cl.ExactMatch(field).configure(m_probabilities=[1, 1e-300]))
 
     linker_training_functions = [
-        {
-            "function": "estimate_probability_two_random_records_match",
-            "arguments": {
-                "deterministic_matching_rules": deterministic_matching_rules,
-                "recall": 1,
-            },
-        },
         {
             "function": "estimate_u_using_random_sampling",
             "arguments": {"max_pairs": 1e4},
@@ -178,8 +169,11 @@ def configure_splink_linker(
     # maximisation, which many of these tests can't run, since several have only one
     # shared field. A pinned m is fine here, since these tests only check raw
     # match/no-match behaviour, not a calibrated probability.
+    # Splink 5 rejects zero m/u values, so use its probability floor for mismatches.
     linker_settings = SettingsCreator(
         link_type="link_only",
+        # Splink 5 cannot predict when the no-match fixture estimates a zero prior.
+        probability_two_random_records_match=0.01,
         retain_matching_columns=False,
         retain_intermediate_calculation_columns=False,
         blocking_rules_to_generate_predictions=blocking_rules_to_generate_predictions,

@@ -1,3 +1,5 @@
+`SplinkLinker` uses Splink 5. See the [Splink documentation](https://moj-analytical-services.github.io/splink/) for configuration and usage.
+
 ::: matchlab.models.linkers.splinklinker
     options:
         show_root_heading: true
