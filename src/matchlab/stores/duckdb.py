@@ -162,10 +162,10 @@ class DuckDBStore(Store):
         """Create the schema, recreating the store if it predates this version."""
         existing = self.conn.execute(
             "SELECT table_name FROM information_schema.tables WHERE table_name = 'meta'"
-        ).fetchone()
+        ).fetchall()
         if existing:
-            row = self.conn.execute("SELECT schema_version FROM meta").fetchone()
-            if row and row[0] == _SCHEMA_VERSION:
+            rows = self.conn.execute("SELECT schema_version FROM meta").fetchall()
+            if rows and rows[0][0] == _SCHEMA_VERSION:
                 return
 
         # Either a pre-versioned store or an older version, so start clean. Artifacts
@@ -196,10 +196,10 @@ class DuckDBStore(Store):
         self.conn.register(name, df.to_arrow())
 
     def _kind(self, fp: Fingerprint) -> StepKind | None:
-        row = self.conn.execute(
+        rows = self.conn.execute(
             "SELECT kind FROM artifacts WHERE fp = ?", [fp]
-        ).fetchone()
-        return StepKind(row[0]) if row else None
+        ).fetchall()
+        return StepKind(rows[0][0]) if rows else None
 
     def _register_artifact(self, fp: Fingerprint, kind: StepKind) -> None:
         self.conn.execute(
@@ -266,15 +266,15 @@ class DuckDBStore(Store):
             # as much as a missing row does.
             resident = self.conn.execute(
                 "SELECT sum(memory_usage_bytes) FROM duckdb_memory()"
-            ).fetchone()
-            size = (resident[0] if resident else 0) or 0
+            ).fetchall()
+            size = (resident[0][0] if resident else 0) or 0
             free, path = 0, None
         else:
             self.conn.execute("CHECKPOINT")
             blocks = self.conn.execute(
                 "SELECT block_size, free_blocks FROM pragma_database_size()"
-            ).fetchone()
-            free = blocks[0] * blocks[1] if blocks else 0
+            ).fetchall()
+            free = blocks[0][0] * blocks[0][1] if blocks else 0
             # `self.path` is the constructor's argument verbatim, so it's resolved
             # here. Otherwise a store opened as "./run.duckdb" would report itself
             # against a working directory that has since moved on.
@@ -285,7 +285,7 @@ class DuckDBStore(Store):
                 if candidate.exists()
             )
 
-        labelled = self.conn.execute("SELECT count(*) FROM labels").fetchone()
+        labelled = self.conn.execute("SELECT count(*) FROM labels").fetchall()
         return DuckDBStoreStats(
             location=self.path,
             path=path,
@@ -295,7 +295,7 @@ class DuckDBStore(Store):
                     "SELECT kind, count(*) FROM artifacts GROUP BY kind"
                 ).fetchall()
             ),
-            labels=labelled[0] if labelled else 0,
+            labels=labelled[0][0] if labelled else 0,
             free_bytes=free,
         )
 
@@ -336,13 +336,13 @@ class DuckDBStore(Store):
     def read_source_extract(self, fp: Fingerprint) -> pl.DataFrame:
         if self._kind(fp) is not StepKind.SOURCE:
             raise KeyError(f"No stored source for fingerprint {fp.hex()}")
-        return self.conn.execute(f'SELECT * FROM "{self._extract_table(fp)}"').pl()
+        return self.conn.sql(f'SELECT * FROM "{self._extract_table(fp)}"').pl()
 
     def read_source_leaves(self, fp: Fingerprint) -> pl.DataFrame:
         if self._kind(fp) is not StepKind.SOURCE:
             raise KeyError(f"No stored source for fingerprint {fp.hex()}")
-        return self.conn.execute(
-            "SELECT key, leaf FROM source_leaves WHERE fp = ?", [fp]
+        return self.conn.sql(
+            "SELECT key, leaf FROM source_leaves WHERE fp = ?", params=[fp]
         ).pl()
 
     # -- identifiers ------------------------------------------------------------------
@@ -357,20 +357,20 @@ class DuckDBStore(Store):
             raise KeyError(f"No stored source for fingerprint {source_fp.hex()}")
 
         if resolver_fp is None:
-            return self.conn.execute(
+            return self.conn.sql(
                 "SELECT leaf AS id, CAST(? AS VARCHAR) AS source, key, leaf "
                 "FROM source_leaves WHERE fp = ?",
-                [source_name, source_fp],
+                params=[source_name, source_fp],
             ).pl()
 
         if self._kind(resolver_fp) is not StepKind.RESOLVER:
             raise KeyError(f"No stored resolver for fingerprint {resolver_fp.hex()}")
         # Both predicates matter. `source` keeps this from scanning every source's
         # rows, and `resolver_output` holds one generation per collect of the plan.
-        return self.conn.execute(
+        return self.conn.sql(
             "SELECT root AS id, source, key, leaf "
             "FROM resolver_output WHERE fp = ? AND source = ?",
-            [resolver_fp, source_name],
+            params=[resolver_fp, source_name],
         ).pl()
 
     # -- maintenance ------------------------------------------------------------------
@@ -464,13 +464,13 @@ class DuckDBStore(Store):
 
         database = self.conn.execute(
             "SELECT database_name FROM duckdb_databases() WHERE NOT internal LIMIT 1"
-        ).fetchone()
-        if database is None:  # a connected store always has one
+        ).fetchall()
+        if not database:  # a connected store always has one
             return
 
         self.conn.execute("CHECKPOINT")
         self.conn.execute(f"ATTACH '{temporary}' AS pruned")
-        self.conn.execute(f'COPY FROM DATABASE "{database[0]}" TO pruned')
+        self.conn.execute(f'COPY FROM DATABASE "{database[0][0]}" TO pruned')
         self.conn.execute("DETACH pruned")
         self.conn.close()
 
@@ -500,8 +500,8 @@ class DuckDBStore(Store):
     def read_model(self, fp: Fingerprint) -> pl.DataFrame:
         if self._kind(fp) is not StepKind.MODEL:
             raise KeyError(f"No stored model for fingerprint {fp.hex()}")
-        return self.conn.execute(
-            "SELECT left_id, right_id, score FROM model_edges WHERE fp = ?", [fp]
+        return self.conn.sql(
+            "SELECT left_id, right_id, score FROM model_edges WHERE fp = ?", params=[fp]
         ).pl()
 
     # -- transforms -------------------------------------------------------------------
@@ -519,7 +519,7 @@ class DuckDBStore(Store):
     def read_transform(self, fp: Fingerprint) -> pl.DataFrame:
         if self._kind(fp) is not StepKind.TRANSFORM:
             raise KeyError(f"No stored transform for fingerprint {fp.hex()}")
-        return self.conn.execute(f'SELECT * FROM "{self._transform_table(fp)}"').pl()
+        return self.conn.sql(f'SELECT * FROM "{self._transform_table(fp)}"').pl()
 
     # -- resolvers --------------------------------------------------------------------
 
@@ -554,8 +554,9 @@ class DuckDBStore(Store):
     def read_resolver(self, fp: Fingerprint) -> pl.DataFrame:
         if self._kind(fp) is not StepKind.RESOLVER:
             raise KeyError(f"No stored resolver for fingerprint {fp.hex()}")
-        return self.conn.execute(
-            "SELECT root, leaf, key, source FROM resolver_output WHERE fp = ?", [fp]
+        return self.conn.sql(
+            "SELECT root, leaf, key, source FROM resolver_output WHERE fp = ?",
+            params=[fp],
         ).pl()
 
     # -- evaluation -------------------------------------------------------------------
@@ -583,15 +584,15 @@ class DuckDBStore(Store):
         self, tag: str | None = None
     ) -> tuple[pl.DataFrame, pl.DataFrame]:
         if tag is None:
-            judgements = self.conn.execute(
+            judgements = self.conn.sql(
                 "SELECT user_name, endorsed, shown FROM judgements"
             ).pl()
         else:
-            judgements = self.conn.execute(
+            judgements = self.conn.sql(
                 "SELECT user_name, endorsed, shown FROM judgements WHERE tag = ?",
-                [tag],
+                params=[tag],
             ).pl()
-        expansion = self.conn.execute("SELECT root, leaves FROM expansion").pl()
+        expansion = self.conn.sql("SELECT root, leaves FROM expansion").pl()
 
         # Present empty results with the right columns/dtypes. We deliberately do not
         # re-validate against the arrow transport schemas here. Those pin `leaves` to a
@@ -624,10 +625,10 @@ class DuckDBStore(Store):
         )
 
     def find(self, label: str) -> Fingerprint | None:
-        row = self.conn.execute(
+        rows = self.conn.execute(
             "SELECT fp FROM labels WHERE label = ?", [label]
-        ).fetchone()
-        return row[0] if row else None
+        ).fetchall()
+        return rows[0][0] if rows else None
 
     def labels(self) -> list[str]:
         return [
@@ -638,12 +639,12 @@ class DuckDBStore(Store):
         ]
 
     def source_key_field(self, fp: Fingerprint) -> str:
-        row = self.conn.execute(
+        rows = self.conn.execute(
             "SELECT key_field FROM source_meta WHERE fp = ?", [fp]
-        ).fetchone()
-        if row is None:
+        ).fetchall()
+        if not rows:
             raise KeyError(f"No stored source for fingerprint {fp.hex()}")
-        return row[0]
+        return rows[0][0]
 
     def resolver_output_sources(self, fp: Fingerprint) -> dict[str, Fingerprint]:
         return {
