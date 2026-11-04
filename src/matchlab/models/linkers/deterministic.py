@@ -163,7 +163,7 @@ class DeterministicLinker(Linker):
         max_est: int = self._get_max_cardinality(con, query)
         logger.info(f"Round {round_num}: Estimated max cardinality: {max_est:,}")
 
-        return con.execute(query).pl()
+        return con.sql(query).pl()
 
     def _get_max_cardinality(
         self, con: duckdb.DuckDBPyConnection, query: SQLQuery
