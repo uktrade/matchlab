@@ -676,7 +676,7 @@ requires-dist = [
     { name = "pyarrow", specifier = ">=17.0.0" },
     { name = "pydantic", specifier = ">=2.9.2" },
     { name = "rich", specifier = ">=13.9.4" },
-    { name = "splink", specifier = ">=4.0.5,<5.1.0" },
+    { name = "splink", specifier = ">=5.0.0,<5.1.0" },
     { name = "sqlalchemy", specifier = ">=2.0.35" },
     { name = "sqlglot", extras = ["c"], specifier = ">=30.0.3" },
     { name = "textual", specifier = ">=0.80" },

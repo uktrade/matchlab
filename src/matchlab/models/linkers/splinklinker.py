@@ -109,9 +109,9 @@ class SplinkLinker(Linker):
 
                 >>> from splink import SettingsCreator, block_on
                 ... import splink.comparison_library as cl
-                ... import splink.comparison_template_library as ctl
                 ... 
                 ... splink_settings = SettingsCreator(
+                ...     link_type="link_only",
                 ...     retain_matching_columns=False,
                 ...     retain_intermediate_calculation_columns=False,
                 ...     blocking_rules_to_generate_predictions=[
@@ -119,12 +119,13 @@ class SplinkLinker(Linker):
                 ...         block_on("postcode"),
                 ...     ],
                 ...     comparisons=[
-                ...         cl.jaro_winkler_at_thresholds(
+                ...         cl.JaroWinklerAtThresholds(
                 ...             "company_name", 
                 ...             [0.9, 0.6], 
+                ...         ).configure(
                 ...             term_frequency_adjustments=True
                 ...         ),
-                ...         ctl.postcode_comparison("postcode"), 
+                ...         cl.PostcodeComparison("postcode"),
                 ...     ]
                 ... )         
         """
@@ -224,6 +225,9 @@ class SplinkLinker(Linker):
         # Convert to pandas for Splink compatibility
         left_pd = left.with_columns(pl.col(self.left_id).cast(pl.String)).to_pandas()
         right_pd = right.with_columns(pl.col(self.right_id).cast(pl.String)).to_pandas()
+        db_api = DuckDBAPI()
+        left_table = db_api.register(left_pd, dataset_display_name="l")
+        right_table = db_api.register(right_pd, dataset_display_name="r")
 
         # A copy, because building a Splink linker writes into the settings it is
         # given: it stamps a random `linker_uid` onto them. Handed our own object,
@@ -232,10 +236,8 @@ class SplinkLinker(Linker):
         # before. A step has to address the same artifact whether or not it has been
         # run, and a random value could never be part of that address anyway.
         self._linker = SplinkLibLinkerClass(
-            input_table_or_tables=[left_pd, right_pd],
-            input_table_aliases=["l", "r"],
+            splink_dataframe_or_dataframes=[left_table, right_table],
             settings=deepcopy(self.linker_settings),
-            db_api=DuckDBAPI(),
         )
 
         for func in self.linker_training_functions:
